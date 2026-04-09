@@ -2,7 +2,11 @@
 
 `encedo-hem` is a Python client library for the [Encedo HEM](https://encedo.com) (Hardware Encryption Module) REST API. It wraps the full device API — key management, symmetric/asymmetric crypto, system control — in a typed, Pythonic interface while handling the custom eJWT authentication, scoped token caching, TLS quirks, and backend check-in flow transparently.
 
-## Install
+---
+
+## Using the library
+
+### Install
 
 ```bash
 pip install encedo-hem
@@ -10,7 +14,7 @@ pip install encedo-hem
 
 Requires Python 3.10+. Runtime dependencies: `httpx`, `cryptography`.
 
-## Quick start
+### Quick start
 
 ```bash
 HEM_HOST=my.ence.do HEM_PASSPHRASE='your-passphrase' python examples/mvp.py
@@ -27,7 +31,7 @@ Expected output (six steps against a real PPA or EPA device):
 [6/6] deleted kid=8edce416d863052ffd9411ca86af1948
 ```
 
-## MVP example
+### MVP example
 
 ```python
 import os, secrets
@@ -53,12 +57,21 @@ with HemClient(host=os.environ["HEM_HOST"], passphrase=os.environ["HEM_PASSPHRAS
 
 The full runnable script lives at [`examples/mvp.py`](examples/mvp.py). See [`examples/README.md`](examples/README.md) for details on both example scripts, including the `wipe_keys.py` maintenance helper.
 
-## Running tests
+---
+
+## Contributing
+
+### Setup
 
 ```bash
-# Install dev dependencies
-uv sync --extra dev        # or: pip install -e ".[dev]"
+./scripts/bootstrap.sh
+```
 
+Installs `uv` (if not present), syncs all dependencies including dev extras, and configures the git pre-commit hook that runs linting and type checks before each commit.
+
+### Running tests
+
+```bash
 # Unit tests (no device required)
 uv run pytest -q
 
@@ -73,7 +86,7 @@ uv run mypy --strict src
 HEM_HOST=my.ence.do HEM_PASSPHRASE='...' uv run pytest tests/integration -q
 ```
 
-## Release checklist
+### Release checklist
 
 Before tagging a new version:
 
@@ -99,7 +112,7 @@ Before tagging a new version:
   ```
 - [ ] `git tag vX.Y.Z` on `main`.
 
-## Further reading
+### Further reading
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — component breakdown, data flow, and design decisions.
 - [PHASE-0-1-SPEC.md](PHASE-0-1-SPEC.md) — Phase 1 implementation spec and acceptance criteria.
