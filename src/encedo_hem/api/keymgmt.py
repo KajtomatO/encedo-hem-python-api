@@ -77,8 +77,9 @@ class KeyMgmtAPI:
     def get(self, kid: KeyId) -> KeyDetails:
         """Return the public details of a single key.
 
-        OQ-16: only ``keymgmt:use:<kid>`` is honoured on observed firmware,
-        not the documented ``keymgmt:get`` scope.
+        OQ-16: the spec scope is ``keymgmt:get`` (confirmed by upstream docs),
+        but firmware v1.2.2-DIAG only accepts ``keymgmt:use:<kid>`` empirically.
+        We use the narrow per-key scope that works everywhere.
         """
         token = self._client._auth.ensure_token(f"keymgmt:use:{kid}")
         raw = self._client._transport.request("GET", f"/api/keymgmt/get/{kid}", token=token)
