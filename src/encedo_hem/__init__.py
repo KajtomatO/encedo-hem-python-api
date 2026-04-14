@@ -14,6 +14,7 @@ from .errors import (
     HemNotFoundError,
     HemNotSupportedError,
     HemPayloadTooLargeError,
+    HemRtcNotSetError,
     HemTlsRequiredError,
     HemTransportError,
 )
@@ -49,6 +50,7 @@ __all__ = [
     "HemNotFoundError",
     "HemNotSupportedError",
     "HemPayloadTooLargeError",
+    "HemRtcNotSetError",
     "HemTlsRequiredError",
     "HemTransportError",
     "KeyDetails",
