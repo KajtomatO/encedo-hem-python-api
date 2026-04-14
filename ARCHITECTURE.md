@@ -717,9 +717,9 @@ Dependencies flow top-to-bottom: Phase 0 is prerequisite for everything; Phase 1
 **Goal:** Implement `auth_flow.pair()` and `auth_flow.remote_login()`.
 
 OQ-1/2/3 were resolved on 2026-04-14 — the broker URLs, flow sequence, and
-`epk` origin are now documented in `encedo-hem-api-doc`. The remaining gap is
-the exact cloud polling endpoint/mechanism for the login flow (step between
-`notify/event/new` and receiving `authreply`).
+`epk` origin are now documented in `encedo-hem-api-doc`. The full login
+sequence — including cloud polling via `GET notify/event/check/{eventid}`
+and cleanup via `DELETE notify/event/{eventid}` — is fully specified.
 
 **Tasks:**
 - [ ] `api/auth_flow.py::pair()`: `GET /api/system/config` (for eid) → `POST https://api.encedo.com/notify/session` (get `epk`) → `POST /api/auth/ext/init` (scope `auth:ext:pair`) → `POST https://api.encedo.com/notify/register/init` → wait for mobile → `POST /api/auth/ext/validate` (scope `auth:ext:pair`). Returns `(kid, confirmation_code)`.
@@ -734,7 +734,7 @@ previously assumed). The `ext/request` response contains `{authreq, epk}`
 
 **Deliverable:** `v0.4.0` (or later).
 
-**Dependencies:** Phase 1; cloud polling endpoint discovery (minor gap in OQ-2).
+**Dependencies:** Phase 1. OQ-1/2/3 fully resolved — no remaining protocol gaps.
 
 ---
 
@@ -751,7 +751,7 @@ previously assumed). The `ext/request` response contains `{authreq, epk}`
 | List pagination cap of 15 is not per-firmware constant, causing missed keys on a device we haven't tested. | M | L | Pagination loop uses `offset + listed >= total` as the termination condition; any honoured page size from 1 to `total` works. A unit test exercises pages of 1, 10, 15, 16, and 64. |
 | `cryptography` wheel unavailable on a caller's platform (very old Linux, unusual CPU). | L | L | Document the requirement. `cryptography` ships manylinux/musllinux/macOS/Windows wheels for all mainstream platforms; the floor is already `>=42` which predates the most recent tightening. |
 | Python 3.10 goes EOL during the library's lifetime. | L | M | Track Python's support schedule; bump the floor in a major release. `requires-python` in `pyproject.toml` means pip will refuse to install on unsupported versions rather than silently breaking. |
-| External auth cloud polling endpoint still undiscovered (minor OQ-2 gap). | L | M | OQ-1/2/3 are resolved (2026-04-14). The only remaining gap is the exact polling endpoint between `notify/event/new` and receiving `authreply`. Phase 4 can proceed with a polling discovery step during integration testing. |
+| External auth protocol fully documented but not yet implemented. | L | M | OQ-1/2/3 fully resolved (2026-04-14). Polling is `GET notify/event/check/{eventid}`, cancel via `DELETE notify/event/{eventid}`, ~900ms cadence. Phase 4 can proceed without protocol discovery. |
 | Device in FLS failure state during MVP run produces confusing errors. | L | L | `HemClient.ensure_ready()` logs a WARNING if `fls_state != 0`; the MVP example script prints `fls_state` as its first line so the operator sees the state before anything else happens. |
 
 ---
@@ -771,7 +771,7 @@ previously assumed). The `ext/request` response contains `{authreq, epk}`
 | Check-in is automatic by default (`auto_checkin=True`). | The brief calls out "automatically providing check-in" as a QoL requirement. Making it automatic hides the three-step bounce from 99% of callers. | Manual-only (simpler but violates the brief); automatic-without-opt-out (unacceptable — some test scenarios need to control exactly when the device talks to the backend). | 2026-04-08 |
 | Hardware detection with `strict_hardware=True` default and opt-out. | Raising `HemNotSupportedError` locally before the wire gives a clean error message instead of a generic 404; opt-out handles DIAG firmware and unknown future revisions. | Always strict (breaks future hardware); never strict (confusing 404s from mismatched endpoints). | 2026-04-08 |
 | `keys.get(kid)` uses scope `keymgmt:use:<kid>`, not `keymgmt:get`. | OQ-16: the spec scope is `keymgmt:get` (confirmed by `encedo-hem-api-doc`), not `keymgmt:list` as originally documented. Firmware v1.2.2-DIAG empirically only accepts `keymgmt:use:<kid>`. Using the narrow per-key scope works everywhere and is more restrictive. | `keymgmt:get` (per spec, but unverified on DIAG); `keymgmt:list` (original wrong spec, empirically 403). | 2026-04-08 (updated 2026-04-14) |
-| Default NIST ECC key mode is `ECDH,ExDSA` in `keys.create`. | OQ-19: omitting `mode` silently creates ECDH-only keys that break signing. Defaulting to the combined mode matches caller intuition. | Match device default (silently-broken sign); require explicit mode (safe but noisy for every ECC key). | 2026-04-08 |
+| Default NIST ECC key mode is `ECDH,ExDSA` in `keys.create`. | OQ-19 (resolved): omitting `mode` silently creates ECDH-only keys that break signing. HEM test suite confirms all NIST ECC keys use `"ECDH,ExDSA"`. Defaulting to the combined mode matches caller intuition and canonical usage. | Match device default (silently-broken sign); require explicit mode (safe but noisy for every ECC key). | 2026-04-08 (confirmed 2026-04-14) |
 | External (remote) authentication deferred to Phase 4 (stubs for now). | OQ-1/2/3 were blocking at design time (2026-04-08) and resolved on 2026-04-14. The broker URLs, flow, and `epk` origin are now documented. Implementation deferred because it requires cloud integration testing and mobile app pairing, not because the protocol is unknown. | Best-guess implementation (no longer necessary — flow is documented); immediate Phase 4 start (possible but deprioritised vs. Phases 2/3). | 2026-04-08 (updated 2026-04-14) |
 | `KeyInfo.type` is parsed into `ParsedKeyType(flags, algorithm)` instead of exposed as a string. | The type field is a comma-separated attribute list (`"PKEY,ECDH,ExDSA,SECP256R1"`); callers should not string-split. | Raw string (caller burden, easy to get wrong); full `dataclass(type=KeyType)` (lossy — can't represent the flag combinations). | 2026-04-08 |
 | `pytest` + `respx` for unit tests, env-gated integration tests. | `respx` mocks httpx at the transport layer, so we test real request construction without real network. Env-gating keeps CI green when nobody has a device attached. | Record-and-replay fixtures (brittle to header changes); integration tests in CI (requires shared device, flaky). | 2026-04-08 |

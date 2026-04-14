@@ -117,9 +117,26 @@ data flow between device, cloud, and client from Encedo Manager source code:
 - Cloud is polled for the mobile's response containing `authreply`.
 - `ext/token` takes `{ authreply }`, returns `{ token }`.
 
-**Remaining gap:** The exact polling endpoint/mechanism for the login flow
-(step 5 in OQ-1) is still not shown — Encedo Manager code references exist
-but the specific cloud polling URL is not extracted.
+**Resolved (2026-04-14):** From Encedo Manager source (`encedo.js:1517`):
+
+- **Poll:** `GET https://api.encedo.com/notify/event/check/{eventid}` —
+  `eventid` comes from the `/notify/event/new` response (`dataEvent.eventid`).
+  When the mobile has responded the body contains `{ authreply: "..." }`,
+  which is then POSTed to `/api/auth/ext/token`.
+- **Cancel / cleanup:** `DELETE https://api.encedo.com/notify/event/{eventid}`
+  (on timeout or user cancel).
+- **Cadence (Manager UI):** `setInterval` at 300ms with a divide-by-3 guard
+  — check fires every ~900ms. Overall timeout ~60s (`timerNow` from 198 ticks).
+
+The full login sequence is therefore:
+
+1. Check-in handshake (3 steps)
+2. `GET https://api.encedo.com/notify/session` → session data (incl. `epk`)
+3. `POST /api/auth/ext/request` with session data → `{ authreq, epk }`
+4. `POST https://api.encedo.com/notify/event/new` with `{ authreq, epk }` → `{ eventid }`
+5. Poll `GET https://api.encedo.com/notify/event/check/{eventid}` until `{ authreply }`
+6. `POST /api/auth/ext/token` with `{ authreply }` → `{ token }`
+7. (On timeout/cancel) `DELETE https://api.encedo.com/notify/event/{eventid}`
 
 ---
 
@@ -167,37 +184,51 @@ is still unknown, but the generation question is fully answered.
 
 ### OQ-18 — `POST /api/keymgmt/update` requires `label` even when only updating `descr`
 
+**Status (2026-04-14):** Documented as optional across all three sources
+(`encedo-hem-api-doc`, Encedo Manager, HEM test suite), but every working
+implementation sends both `label` and `descr` together:
+
+- Manager (`build.js:5901`, `build.js:6604`, `build.js:6706`) always sends
+  `{ kid, label, descr }`.
+- Test suite (`test_10.php:362`) constructs `keyupdate_arg` with both fields.
+
+The empirical 400 when `label` is omitted is consistent with this pattern.
+**Treat `label` as mandatory in practice**, even though the spec says
+otherwise. The device bug/spec inconsistency remains unresolved upstream;
+no caller in the wild triggers the documented "label optional" behaviour.
+
 **Affected endpoint:** `POST /api/keymgmt/update`
 **Confirmed via:** live device testing (firmware v1.2.2-DIAG)
-
-The API design doc says all fields are optional (at least one of `label`/`descr` required).
-In practice the device returns **HTTP 400** if `label` is omitted, even when a valid
-`descr` is provided. Sending both `label` and `descr` succeeds.
-
-**Update (2026-04-14):** The `encedo-hem-api-doc` (`keymgmt/update.md`) also
-marks `label` as **optional** (Required: No). Additionally, the Encedo Manager
-source always sends both `label` and `descr` together, which is consistent
-with the device rejecting `descr`-only updates. The docs and device still
-contradict — treat `label` as mandatory in practice.
 
 ---
 
 ### OQ-19 — NIST ECC keys created without `mode` are ECDH-only; signing returns 406
 
+**Resolved (2026-04-14):** Confirmed by HEM test suite
+(`hem-api-tester/test_10.php:79-82`), which explicitly maps every NIST ECC
+type to `mode: "ECDH,ExDSA"`:
+
+```php
+$support_key_types = array(
+    "SECP256R1" => ['mode' => "ECDH,ExDSA", "isECDH" => true],
+    "SECP384R1" => ['mode' => "ECDH,ExDSA", "isECDH" => true],
+    "SECP521R1" => ['mode' => "ECDH,ExDSA", "isECDH" => true],
+    "SECP256K1" => ['mode' => "ECDH,ExDSA", "isECDH" => true],
+    ...
+);
+```
+
+The test suite never omits `mode` for NIST ECC — i.e. the canonical usage
+is "always specify the mode". The empirical 406-on-sign when `mode` is
+omitted is consistent with the default being ECDH-only. Callers that need
+signing must pass `"ExDSA"` or `"ECDH,ExDSA"` explicitly.
+
+`ED25519` and other non-NIST curve types are sign-only by nature — `mode`
+is only relevant for NIST ECC. The `encedo-hem-api-doc` `keymgmt/create.md`
+should document the default explicitly; opened as a doc issue.
+
 **Affected endpoint:** `POST /api/keymgmt/create`
 **Confirmed via:** live device testing (firmware v1.2.2-DIAG, SECP256R1 key)
-
-The API design doc describes `mode` as optional with no stated default. In practice,
-omitting `mode` for NIST ECC key types (`SECP256R1`, etc.) creates a key that only
-supports ECDH. Calling sign (`POST /api/crypto/exdsa/sign`) on such a key returns
-**HTTP 406**.
-
-The spec should state the default explicitly: omitting `mode` for NIST ECC keys
-is equivalent to `"ECDH"`. Callers that need signing must pass `"ExDSA"` or
-`"ECDH,ExDSA"`.
-
-Note: `ED25519` and other non-NIST curve types are sign-only by nature and are
-unaffected — `mode` is only relevant for NIST ECC.
 
 ---
 
@@ -231,26 +262,47 @@ any binding exposes the field with a meaningful name.
 **Update (2026-04-14):** The `encedo-hem-api-doc` (`system/status.md`)
 describes `https` simply as **"Optional. HTTPS availability"** — without
 the "returned only if called by HTTP endpoint" qualifier from the
-original upstream docs. This suggests the original upstream wording was
-overly narrow and the field is just an availability indicator regardless
-of transport. The Python library's `bool | None` model remains correct.
+original upstream docs. This is backed by the Encedo Manager:
 
-**Remaining question:** What does `false` mean on a TLS session — is it
-that an attested cert has not been provisioned?
+```javascript
+// build.js:3623
+if (app.encedo_status.https && window.location.protocol != 'https:') {
+    window.location.replace(`https:${location.href.substring(...)}`);
+}
+```
+
+The Manager reads `status.https` as a **capability flag** — "HTTPS is
+available on this device" — and only redirects HTTP→HTTPS when the UI
+itself is being served over plain HTTP. The field is emitted regardless
+of the request scheme; the original upstream "HTTP-only" qualifier is
+wrong/outdated.
+
+**Semantics:** `true` = HTTPS listener is up; `false` = HTTPS listener is
+not available (e.g. TLS cert not yet provisioned via check-in). The
+Python library's `bool | None` model remains correct; surface the field
+as `https_available: bool`.
 
 ---
 
 ### OQ-20 — `POST /api/keymgmt/import` returns 406 on duplicate public key
 
+**Resolved (2026-04-14):** Confirmed as expected device behaviour by the
+HEM test suite (`hem-api-tester/test_10.php:303`):
+
+```php
+if ( count($failed_calls) == count($keys_to_import)) {
+  // expected if re-run - key duplication is impossible (406)
+}
+```
+
+The test suite treats 406 on re-import as a **valid, expected outcome** —
+the device enforces key deduplication and returns 406 rather than silently
+re-importing. The `keymgmt/import.md` error table should call out
+duplicate key as a specific 406 trigger; Python bindings should surface a
+distinct `KeyAlreadyExistsError` on 406 from this endpoint.
+
 **Affected endpoint:** `POST /api/keymgmt/import`
-**Confirmed via:** live device testing (firmware v1.2.2-DIAG)
-
-Importing the same public key a second time returns **HTTP 406**. This is not listed
-in the API design doc's error table for this endpoint (which shows no 406 case), nor
-in the global status code table (which lists 406 as "auth/init only").
-
-The spec's 406 description needs to be generalized: it also covers duplicate key
-import and (from the derive spec) ECDH shared secret too small for the requested type.
+**Confirmed via:** live device testing (firmware v1.2.2-DIAG) + test suite
 
 ---
 
@@ -276,10 +328,26 @@ may surface it to callers.
 
 ### OQ-5 — `ctx` field in `POST /api/auth/token` eJWT payload
 
-**Partially resolved (2026-04-08):** Upstream lists `ctx` in the eJWT payload
-field set; elsewhere in `system/config` it is described as **"Instance context
-id"**. The exact effect on token issuance/claims is still not documented.
-Library may continue to omit it; revisit if a use case appears.
+**Resolved (2026-04-14):** The HEM test suite (`test_3.php:90`) sends a
+literal placeholder string:
+
+```php
+$auth_val_user = array(
+  'jti' => ..., 'aud' => ..., 'exp' => ..., 'iat' => ...,
+  'iss' => ..., 'scope' => "system:config",
+  'ctx' => "place_here_max_64chars"
+);
+```
+
+The returned bearer token's decoded payload contains only
+`scope, sub, iat, exp, jti` — no `ctx` is echoed back. So `ctx` is an
+opaque free-form string (≤64 chars) that the caller may pass for
+audit/trace purposes but which has **no effect on token issuance or
+claims**. The Python library may safely continue to omit it.
+
+Note: the numeric `ctx` seen in `GET /api/system/status` and
+`POST /api/system/config` (`build.js:724` sets `"ctx": 0`) is a different
+field — "instance context id" on the device, unrelated to the eJWT `ctx`.
 
 ---
 
@@ -300,29 +368,36 @@ currently never sends it.
 
 ### OQ-6 — `POST /api/keymgmt/update` response format undefined
 
-**Affected endpoint:** `POST /api/keymgmt/update`
-
-Response is described as "Empty or acknowledgement object" with no JSON example.
-The library cannot tell whether the update succeeded other than by checking HTTP 200.
-
-**Questions:**
-- Is the response body always empty `{}`?
-- Is there an `updated: true/false` field similar to `POST /api/system/config`?
+**Resolved (2026-04-14):** Encedo Manager (`build.js:5901`, `:6604`,
+`:6706`) and test suite (`test_10.php:362`) both **ignore the response
+body** — they only check HTTP 200 via the `.then()` callback. No caller
+in the wild reads an `updated: true` field. Treat the response as opaque:
+success = status code 200, no JSON body expected. The `encedo-hem-api-doc`
+`keymgmt/update.md` documents this as-is (no response JSON shown).
 
 ---
 
 ### OQ-7 — `POST /api/keymgmt/search` minimum pattern length for unauthenticated use
 
+**Partially resolved (2026-04-14):** No source independently documents the
+exact byte-counting rule, but the pattern format is now clear from two
+working callers:
+
+- Manager (`build.js:5806`) uses `'^RVhUQUlE'` — a `^` regex anchor
+  followed by base64 of the ASCII string `EXTAID` (6 bytes).
+- Test suite (`test_10.php:407`) builds the pattern as
+  `"^" . base64_encode("CCTEST:")` — again `^` + base64 of a 7-byte ASCII
+  prefix.
+
+Both wrap a **≥6-byte raw ASCII prefix** in `base64_encode` and prepend
+`^`. Interpretation: the 6-byte minimum most likely refers to the raw
+(pre-base64) prefix the caller is searching for, which is the semantic
+unit — not the length of the JSON-level string. Callers that follow the
+Manager/test-suite convention (`^` + base64(≥6-byte prefix)) will always
+satisfy the rule, so this is no longer blocking. HTTP status on
+too-short patterns is still unconfirmed (likely 400).
+
 **Affected endpoint:** `POST /api/keymgmt/search`
-
-The spec says unauthenticated search is allowed "if `allow_keysearch` is enabled
-and pattern >= 6 bytes". It is unclear whether "6 bytes" refers to the raw binary
-length of the `descr` pattern before base64 encoding, or the length of the
-base64 string itself.
-
-**Questions:**
-- Is the 6-byte minimum applied before or after base64 encoding?
-- What HTTP status is returned if the pattern is too short?
 
 ---
 
@@ -339,9 +414,32 @@ each log entry is **signed with Ed25519** and entries are **chained via
 HMAC-SHA256** (each entry's HMAC includes the previous entry's HMAC). The
 logger public key from `GET /api/logger/key` is used to verify signatures.
 
-**Remaining questions:**
-- What are the 7 pipe-delimited fields? (timestamp, event type, KID, user, ...?)
-- Is there a maximum file size, or can log files be arbitrarily large?
+**Resolved (2026-04-14):** The HEM test suite
+(`hem-api-tester/libs/lib.php:364 encedo_log_integrity_check`) reveals
+the full record structure. Each line is `f0|f1|f2|f3|f4|f5|f6` where the
+last field is always the HMAC tail.
+
+There are two entry kinds, distinguished by `f2 == 0 && f3 == 0`:
+
+- **Header / key-rotation entry** (first entry of a log, and at each
+  rotation): `f4` is the new base64url-encoded HMAC-SHA256 key, `f5` is
+  the base64url Ed25519 signature of that key. Verified with the logger
+  public key from `GET /api/logger/key`.
+- **Data entry** (all others): `f0..f5` carry event metadata, `f6` is
+  the 16-byte-prefix HMAC over everything up to and including the last
+  `|` separator, keyed by the current header's HMAC key. Chaining is
+  implicit: breaking any line's HMAC or losing an entry invalidates all
+  subsequent entries under that key.
+
+The exact meaning of `f0..f3` in a data entry (timestamp, event type, KID,
+user, etc.) is still not labelled anywhere, but the **verification
+algorithm is fully specified**. The Python binding can verify log
+integrity without needing to name the individual fields — surface them
+as a 6-tuple of strings plus the verification status.
+
+Max file size is still undocumented.
+
+**Affected endpoint:** `GET /api/logger/{id}`
 
 ---
 
@@ -395,10 +493,22 @@ adds a **201** status code ("Validation process started") distinct from 202
 ("Validation ongoing"). The Encedo Manager polls in a `setTimeout` loop.
 No interval or timeout values are documented.
 
-**Remaining questions:**
-- What is the expected verification duration?
-- Is there a timeout after which the device gives up and returns an error?
-- Same question applies to `GET /api/system/upgrade/check_ui`.
+**Resolved (2026-04-14):** From Encedo Manager (`build.js:1108-1131` and
+`build.js:1247-1285`):
+
+- **`check_fw`:** poll interval **4000 ms** (`setTimeout(4000)` after
+  201/202); per-request XHR timeout **120000 ms** (2 min). No overall
+  cap — the Manager polls indefinitely until 200 or a non-201/202 status.
+- **`check_ui`:** initial wait **60000 ms** before the first poll, then
+  `setInterval(5000)` (5 s cadence) after 201; per-request XHR timeout
+  **4000 ms**. 202 is treated as "continue polling silently".
+
+Suggested binding behaviour: poll every 4 s for `check_fw` and every 5 s
+for `check_ui`, with an implementation-chosen upper bound (the Manager
+relies on the user aborting; bindings should pick a finite budget, e.g.
+5 min, and surface a timeout error).
+
+**Affected endpoint:** `GET /api/system/upgrade/check_fw` (and `check_ui`)
 
 ---
 
@@ -486,15 +596,15 @@ has no documented size limit. The current stub allocates 1024 bytes for it.
 | ID | Severity | Status | Topic | Blocks |
 |---|---|---|---|---|
 | OQ-1 | Critical | **Resolved** | Broker URLs and flow documented | — |
-| OQ-2 | Critical | **Largely resolved** | Broker request/response format | Polling endpoint still unknown |
+| OQ-2 | Critical | **Resolved** | Broker request/response format; polling via `notify/event/check/{eventid}` | — |
 | OQ-3 | Critical | **Resolved** | `epk` comes from broker `/notify/session` | — |
 | OQ-4 | Significant | **Resolved** | `lbl` = device label | — |
-| OQ-5 | Significant | Partially resolved | `ctx` in eJWT payload undocumented | Minor — library omits it |
-| OQ-6 | Significant | Open | `update` response format | `hem_key_update` |
-| OQ-7 | Significant | Open | Search pattern minimum length | `hem_key_search` |
-| OQ-8 | Significant | Partially resolved | Log entry field names; chain verification documented | `hem_logger_download` |
+| OQ-5 | Significant | **Resolved** | `ctx` is opaque free-form ≤64 chars, not echoed in token | — |
+| OQ-6 | Significant | **Resolved** | `update` response body is ignored by all callers; success = HTTP 200 | — |
+| OQ-7 | Significant | Partially resolved | Pattern convention is `^` + base64(≥6B); exact 6-byte rule still inferred | `hem_key_search` |
+| OQ-8 | Significant | **Resolved** | Log entry structure + chain verification fully specified | Field name labels still unlabelled |
 | OQ-9 | Significant | **Resolved** | Firmware binary upload format | — |
-| OQ-10 | Significant | Open | `check_fw` polling interval (201/202 codes now known) | `hem_upgrade_check_fw` |
+| OQ-10 | Significant | **Resolved** | `check_fw` = 4s poll, `check_ui` = 60s initial + 5s poll | — |
 | OQ-11 | Significant | **Resolved** | Storage scope format for disk N | — |
 | OQ-12 | Significant | **Resolved** | Verify: 200 = valid (no body), 406 = failed | — |
 | OQ-13 | Minor | Open | `genuine` blob max size | Buffer sizing |
@@ -502,7 +612,7 @@ has no documented size limit. The current stub allocates 1024 bytes for it.
 | OQ-15 | Minor | Open | Broker `reply` field max size | Buffer sizing |
 | OQ-16 | Critical | **Resolved** | Scope is `keymgmt:get`, not `keymgmt:list` | — |
 | OQ-17 | Critical | **Resolved** | List page size default/cap is 15 | — |
-| OQ-18 | Significant | Open | `keymgmt:update` requires `label` (docs say optional, device disagrees) | `hem_key_update` |
-| OQ-19 | Significant | Open | NIST ECC default mode is ECDH-only; signing fails with 406 | `hem_key_create` + `hem_sign` |
-| OQ-20 | Significant | Open | `keymgmt:import` returns 406 on duplicate public key (undocumented) | `hem_key_import` |
-| OQ-21 | Significant | Partially resolved | `status.https` = "HTTPS availability", not HTTP-only conditional | Field semantics in all bindings |
+| OQ-18 | Significant | **Practice confirmed** | `keymgmt:update`: all callers send `label` + `descr` together; treat `label` as mandatory | Upstream doc still says optional |
+| OQ-19 | Significant | **Resolved** | Test suite always sends `mode: "ECDH,ExDSA"` for NIST ECC | — |
+| OQ-20 | Significant | **Resolved** | Test suite confirms 406 on duplicate import is expected device behaviour | — |
+| OQ-21 | Significant | **Resolved** | `status.https` = HTTPS listener capability flag; Manager uses it to redirect HTTP→HTTPS | — |
