@@ -591,6 +591,31 @@ has no documented size limit. The current stub allocates 1024 bytes for it.
 
 ---
 
+### OQ-22 — `POST /api/crypto/pqc/mldsa/verify` returns HTTP 795 for invalid signature
+
+**Status (2026-04-14):** Open — confirmed on firmware during Phase 2 smoke test.
+
+**Affected endpoint:** `POST /api/crypto/pqc/mldsa/verify`
+**Confirmed via:** `examples/crypto_smoke.py` against my.ence.do (2026-04-14)
+
+Docs (and all other verify endpoints) specify HTTP 406 for a failed verification.
+`mldsa/verify` returned HTTP **795** when the signature did not match (wrong message,
+correct key). 795 is not a standard HTTP status code.
+
+**Observed behaviour:**
+- Correct message + correct signature → HTTP 200 (as documented)
+- Wrong message + correct signature → HTTP **795** (expected 406)
+
+**Impact:** The current `mldsa.verify()` implementation catches `HemNotAcceptableError`
+(406) and returns `False`. HTTP 795 maps to a generic `HemError` and is raised as an
+exception instead of returning `False`.
+
+**Decision needed:** Should 795 be treated as equivalent to 406 (return `False`), or
+is it a device error that should propagate? Leaning toward treating it as "invalid
+signature" since that is the semantic context, but confirming with upstream first.
+
+---
+
 ## Summary table
 
 | ID | Severity | Status | Topic | Blocks |
@@ -616,3 +641,4 @@ has no documented size limit. The current stub allocates 1024 bytes for it.
 | OQ-19 | Significant | **Resolved** | Test suite always sends `mode: "ECDH,ExDSA"` for NIST ECC | — |
 | OQ-20 | Significant | **Resolved** | Test suite confirms 406 on duplicate import is expected device behaviour | — |
 | OQ-21 | Significant | **Resolved** | `status.https` = HTTPS listener capability flag; Manager uses it to redirect HTTP→HTTPS | — |
+| OQ-22 | Significant | Open | `mldsa/verify` returns HTTP 795 (not 406) for invalid signature | `mldsa.verify()` raises instead of returning `False` |

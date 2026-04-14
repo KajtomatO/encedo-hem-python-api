@@ -4,7 +4,7 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 
 from .client import HemClient
-from .enums import CipherAlg, HardwareForm, KeyMode, KeyType, Role
+from .enums import CipherAlg, HardwareForm, HashAlg, KeyMode, KeyType, Role, SignAlg, WrapAlg
 from .errors import (
     HemAuthError,
     HemBadRequestError,
@@ -22,11 +22,17 @@ from .models import (
     DeviceConfig,
     DeviceStatus,
     DeviceVersion,
+    EcdhResult,
     EncryptResult,
+    HmacResult,
     KeyDetails,
     KeyId,
     KeyInfo,
+    MlKemDecapsResult,
+    MlKemEncapsResult,
     ParsedKeyType,
+    SignResult,
+    WrapResult,
 )
 
 try:
@@ -39,8 +45,10 @@ __all__ = [
     "DeviceConfig",
     "DeviceStatus",
     "DeviceVersion",
+    "EcdhResult",
     "EncryptResult",
     "HardwareForm",
+    "HashAlg",
     "HemAuthError",
     "HemBadRequestError",
     "HemClient",
@@ -53,12 +61,19 @@ __all__ = [
     "HemRtcNotSetError",
     "HemTlsRequiredError",
     "HemTransportError",
+    "HmacResult",
     "KeyDetails",
     "KeyId",
     "KeyInfo",
     "KeyMode",
     "KeyType",
+    "MlKemDecapsResult",
+    "MlKemEncapsResult",
     "ParsedKeyType",
     "Role",
+    "SignAlg",
+    "SignResult",
+    "WrapAlg",
+    "WrapResult",
     "__version__",
 ]

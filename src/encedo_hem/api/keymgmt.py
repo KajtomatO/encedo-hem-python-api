@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from .._base64 import b64_std_decode, b64_std_encode
 from ..enums import KeyMode, KeyType
+from ..errors import HemNotFoundError
 from ..models import KeyDetails, KeyId, KeyInfo, ParsedKeyType
 
 if TYPE_CHECKING:
@@ -106,6 +107,110 @@ class KeyMgmtAPI:
         """Delete a key from the device."""
         token = self._client._auth.ensure_token("keymgmt:del")
         self._client._transport.request("DELETE", f"/api/keymgmt/delete/{kid}", token=token)
+
+    def derive(
+        self,
+        kid: KeyId,
+        label: str,
+        type: KeyType,
+        *,
+        descr: bytes | None = None,
+        ext_kid: KeyId | None = None,
+        pubkey: bytes | None = None,
+        mode: KeyMode | None = None,
+    ) -> KeyId:
+        """Derive a new key via ECDH and return its ``kid``.
+
+        ``ext_kid`` and ``pubkey`` are mutually exclusive.
+        """
+        if len(label) > 31:
+            raise ValueError("label must be at most 31 characters")
+        if descr is not None and len(descr) > 128:
+            raise ValueError("descr must be at most 128 raw bytes before base64")
+        if ext_kid is not None and pubkey is not None:
+            raise ValueError("ext_kid and pubkey are mutually exclusive")
+        body: dict[str, str] = {"kid": kid, "label": label, "type": type.value}
+        if descr is not None:
+            body["descr"] = b64_std_encode(descr)
+        if ext_kid is not None:
+            body["ext_kid"] = ext_kid
+        if pubkey is not None:
+            body["pubkey"] = b64_std_encode(pubkey)
+        if type.is_nist_ecc and mode is None:
+            mode = KeyMode.ECDH_EXDSA
+        if mode is not None:
+            body["mode"] = mode.value
+        token = self._client._auth.ensure_token("keymgmt:ecdh")
+        raw = self._client._transport.request(
+            "POST", "/api/keymgmt/derive", json_body=body, token=token
+        )
+        return KeyId(raw["kid"])
+
+    def import_key(
+        self,
+        label: str,
+        pubkey: bytes,
+        type: KeyType,
+        *,
+        descr: bytes | None = None,
+        mode: KeyMode | None = None,
+    ) -> KeyId:
+        """Import an external public key and return its ``kid``.
+
+        Named ``import_key`` to avoid shadowing the ``import`` keyword.
+
+        Note: HTTP 406 from this endpoint means the public key already exists
+        on the device (key deduplication). Raises :class:`HemNotAcceptableError`.
+        """
+        if len(label) > 31:
+            raise ValueError("label must be at most 31 characters")
+        body: dict[str, str] = {
+            "label": label,
+            "pubkey": b64_std_encode(pubkey),
+            "type": type.value,
+        }
+        if descr is not None:
+            body["descr"] = b64_std_encode(descr)
+        if type.is_nist_ecc and mode is None:
+            mode = KeyMode.ECDH_EXDSA
+        if mode is not None:
+            body["mode"] = mode.value
+        token = self._client._auth.ensure_token("keymgmt:imp")
+        raw = self._client._transport.request(
+            "POST", "/api/keymgmt/import", json_body=body, token=token
+        )
+        return KeyId(raw["kid"])
+
+    def search(
+        self,
+        descr: str,
+        *,
+        offset: int = 0,
+        limit: int = _LIST_PAGE_SIZE,
+    ) -> Iterator[KeyInfo]:
+        """Search keys by description pattern, auto-paginating.
+
+        ``descr`` is passed as-is to the device. Convention (OQ-7):
+        ``'^' + base64(raw_prefix)`` where ``raw_prefix`` is ≥6 bytes.
+
+        HTTP 404 from the device means no keys matched — yields nothing.
+        """
+        token = self._client._auth.ensure_token("keymgmt:search")
+        while True:
+            body: dict[str, Any] = {"descr": descr, "offset": offset, "limit": limit}
+            try:
+                raw = self._client._transport.request(
+                    "POST", "/api/keymgmt/search", json_body=body, token=token
+                )
+            except HemNotFoundError:
+                return
+            total = int(raw.get("total", 0))
+            listed = int(raw.get("listed", 0))
+            for entry in raw.get("list", []):
+                yield _key_info(entry)
+            offset += listed
+            if offset >= total or listed == 0:
+                return
 
 
 def _key_info(entry: dict[str, Any]) -> KeyInfo:
