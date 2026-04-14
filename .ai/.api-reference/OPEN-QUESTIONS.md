@@ -1,6 +1,6 @@
 # Open Questions — API Documentation Gaps
 
-Issues found in `HEM-REST-API-DESIGN.md` and `INTEGRATION_GUIDE.md` that block
+Issues found in API documentation and `INTEGRATION_GUIDE.md` that block
 implementation or were discovered during testing. Each item notes which endpoint is
 affected and what specifically is missing or wrong.
 
@@ -45,7 +45,7 @@ The C library was already fixed to always use `keymgmt:use:<kid>` for `hem_key_g
 (`api-reference/key-management/list-the-keys.md`) documents `limit` as having a
 **default of 15**. The empirical "cap at 15" is the device ignoring the
 requested value and falling back to the default. Treat 15 as the effective max
-page size and paginate via `offset`. INTEGRATION_GUIDE.md §4.2.1 updated
+page size and paginate via `offset`. INTEGRATION_GUIDE.md §5.2.1 updated
 accordingly. The original "what is the cap" question is answered (15);
 "is this per-firmware vs per-config" is no longer blocking.
 
@@ -74,47 +74,52 @@ Safe workaround: use a page size ≤ 10 until the exact cap is confirmed.
 
 ### OQ-1 — Notification broker URL is wrong
 
-**Affected endpoints:** `POST /api/auth/ext/init` (pairing), `POST /api/auth/ext/request` (login)
+**Resolved (2026-04-14):** The `encedo-hem-api-doc` repo (`auth/ext-init.md`,
+`auth/ext-request.md`) documents the full broker flows extracted from Encedo
+Manager source code. The broker is **not** a single URL — it is a multi-step
+sequence:
 
-The API design states the device response must be forwarded to:
-```
-POST api.encedo.com/notify/event/new
-```
-Testing confirmed this URL returns **HTTP 404**. The check-in broker
-(`https://api.encedo.com/checkin`) works, so the server is reachable — only
-this path is wrong.
+**Pairing flow:**
+1. `POST https://api.encedo.com/notify/session` with `{ eid }` → returns `{ epk }`
+2. `POST /api/auth/ext/init` with `{ epk }` → returns `{ request, eid }`
+3. `POST https://api.encedo.com/notify/register/init` with `{ request, eid, epk }`
 
-**Blocked:** `hem_auth_ext_pair` and `hem_auth_ext_login` are stubbed out until
-the correct URL is confirmed.
+**Login flow:**
+1. Check-in handshake (3 steps)
+2. `GET https://api.encedo.com/notify/session` → returns session data (incl. `epk`)
+3. `POST /api/auth/ext/request` with session data → returns `{ authreq, epk }`
+4. `POST https://api.encedo.com/notify/event/new` with `{ authreq, epk }`
+5. Poll cloud for mobile's response
+6. `POST /api/auth/ext/token` with `{ authreply }`
 
-**Questions:**
-- What is the correct broker URL?
-- Does the URL include the device `eid` as a path segment (e.g. `.../event/<eid>`)?
-- Is there a query parameter or request header required?
+The original 404 was likely caused by calling `/notify/event/new` without a
+prior `/notify/session` call to establish context.
 
 ---
 
 ### OQ-2 — Notification broker request/response format undefined
 
-**Affected endpoints:** same as OQ-1
+**Largely resolved (2026-04-14):** The `encedo-hem-api-doc` repo documents the
+data flow between device, cloud, and client from Encedo Manager source code:
 
-The API design says "forward the entire response verbatim" but does not document
-what the broker returns.
+**Pairing:**
+- `notify/session` takes `{ eid }`, returns `{ epk }`.
+- `ext/init` takes `{ epk }`, returns `{ request, eid }`.
+- `notify/register/init` takes `{ request, eid, epk }` — response presumably
+  contains `pid` and `reply` for `ext/validate`, but this is inferred from
+  `ext/validate`'s documented request fields (`{ pid, reply }`), not directly
+  shown.
 
-For **pairing** (`ext/init` → broker → `ext/validate`):
-- The broker response is assumed to contain `pid` and `reply` fields (based on
-  what `ext/validate` expects), but this is not stated anywhere.
+**Login:**
+- `notify/session` (GET) returns session data including `epk`.
+- `ext/request` takes session data, returns `{ authreq, epk }`.
+- `notify/event/new` takes `{ authreq, epk }` — pushes to mobile.
+- Cloud is polled for the mobile's response containing `authreply`.
+- `ext/token` takes `{ authreply }`, returns `{ token }`.
 
-For **login** (`ext/request` → broker → `ext/token`):
-- The broker response is assumed to contain an `authreply` field (based on what
-  `ext/token` expects), but this is not stated anywhere.
-
-**Questions:**
-- What JSON fields does the broker return for pairing? (`pid`, `reply`?)
-- What JSON fields does the broker return for login? (`authreply`?)
-- Does the broker block synchronously until the phone approves, or does it return
-  immediately and require polling? If polling, what is the polling endpoint?
-- Is there a timeout on the broker side? What HTTP status is returned on timeout?
+**Remaining gap:** The exact polling endpoint/mechanism for the login flow
+(step 5 in OQ-1) is still not shown — Encedo Manager code references exist
+but the specific cloud polling URL is not extracted.
 
 ---
 
@@ -134,25 +139,27 @@ removed.
 
 ### OQ-3 (original report)
 
-**Affected endpoints:** `POST /api/auth/ext/init`, `POST /api/auth/ext/request`
+**Resolved (2026-04-14):** The `encedo-hem-api-doc` repo (`auth/ext-init.md`)
+shows the definitive flow from Encedo Manager source:
 
-Both endpoints accept an `epk` described as "backend session public key (base64)".
-The word "backend" is ambiguous — it could mean:
-- The calling application generates an ephemeral X25519 keypair and passes the
-  public key (this is the current assumption in the implementation).
-- The Encedo cloud backend generates a session keypair, and `epk` must be
-  retrieved from there first.
+```javascript
+// 1. Get device config (for eid)
+app.api('api/system/config')
+// 2. Create cloud session — BROKER returns epk
+.then(data => app.api('https://api.encedo.com/notify/session', 'POST', { eid: data.eid }))
+// 3. Pass broker's epk to device
+.then(data => {
+    epk_temp = data.epk;
+    return app.api('api/auth/ext/init', 'POST', { epk: data.epk });
+})
+```
 
-If the application generates it, the corresponding private key must be used to
-decrypt something in the broker response (which would explain why the broker
-response format is undefined — it may be encrypted).
+The **broker (Encedo cloud)** generates the ephemeral keypair. The client
+obtains `epk` from `POST https://api.encedo.com/notify/session` and forwards
+it to the device. The client does **not** generate `epk` locally.
 
-**Questions:**
-- Does the client (library) generate the `epk` keypair, or does it come from
-  the Encedo cloud backend?
-- Is the broker response encrypted to `epk`? If so, what encryption scheme?
-- Should the library generate and manage the ephemeral keypair internally, or
-  should the caller provide both the public and private key?
+Whether the broker response to `notify/register/init` is encrypted to `epk`
+is still unknown, but the generation question is fully answered.
 
 ---
 
@@ -167,8 +174,11 @@ The API design doc says all fields are optional (at least one of `label`/`descr`
 In practice the device returns **HTTP 400** if `label` is omitted, even when a valid
 `descr` is provided. Sending both `label` and `descr` succeeds.
 
-The spec needs to note that `label` is mandatory. Bindings that expose a
-"set description only" helper will silently break without this.
+**Update (2026-04-14):** The `encedo-hem-api-doc` (`keymgmt/update.md`) also
+marks `label` as **optional** (Required: No). Additionally, the Encedo Manager
+source always sends both `label` and `descr` together, which is consistent
+with the device rejecting `descr`-only updates. The docs and device still
+contradict — treat `label` as mandatory in practice.
 
 ---
 
@@ -218,14 +228,15 @@ The Python library now models it as `bool | None` and treats absence as
 the documented case, but the divergence needs an upstream answer before
 any binding exposes the field with a meaningful name.
 
-**Questions:**
-- Is the field's presence over HTTPS a firmware bug, or is the spec
-  wording incomplete?
-- If the latter, what does `false` actually indicate on a TLS-served
-  session — and does it ever flip to `true` after attested cert
-  provisioning?
-- Should bindings rename it (e.g. `https_provisioned`) or keep the wire
-  name?
+**Update (2026-04-14):** The `encedo-hem-api-doc` (`system/status.md`)
+describes `https` simply as **"Optional. HTTPS availability"** — without
+the "returned only if called by HTTP endpoint" qualifier from the
+original upstream docs. This suggests the original upstream wording was
+overly narrow and the field is just an availability indicator regardless
+of transport. The Python library's `bool | None` model remains correct.
+
+**Remaining question:** What does `false` mean on a TLS session — is it
+that an attested cert has not been provisioned?
 
 ---
 
@@ -256,19 +267,10 @@ payload is allowed but not required for token issuance to work.
 
 ### OQ-4 (original report)
 
-**Affected endpoint:** `GET /api/auth/token`
-
-Response includes a `lbl` field:
-```json
-{ "eid": "...", "spk": "...", "jti": "...", "exp": ..., "lbl": "<label>" }
-```
-The `lbl` field is present in the spec but never explained. The library currently
-ignores it.
-
-**Questions:**
-- What does `lbl` contain? (Device label? User label?)
-- Should the library expose it to callers?
-- Is it required to be included in the eJWT payload?
+**Resolved (2026-04-14):** Confirmed by `encedo-hem-api-doc` (`auth/token.md`).
+The `lbl` field is documented as **"Device label"** in the GET response table.
+It is informational metadata, not required in the eJWT payload. The library
+may surface it to callers.
 
 ---
 
@@ -331,9 +333,14 @@ base64 string itself.
 The spec says the response is "plain text" with entries that are "pipe-delimited
 with 7 fields" but does not name the fields.
 
-**Questions:**
+**Update (2026-04-14):** The `encedo-hem-api-doc` (`logger/get.md`) confirms
+Content-Type is `text/plain`. DISCREPANCIES.md #22 adds significant detail:
+each log entry is **signed with Ed25519** and entries are **chained via
+HMAC-SHA256** (each entry's HMAC includes the previous entry's HMAC). The
+logger public key from `GET /api/logger/key` is used to verify signatures.
+
+**Remaining questions:**
 - What are the 7 pipe-delimited fields? (timestamp, event type, KID, user, ...?)
-- Is the response Content-Type `text/plain` or `application/octet-stream`?
 - Is there a maximum file size, or can log files be arbitrarily large?
 
 ---
@@ -383,7 +390,12 @@ transport function (`hem_http_post_binary`) will be needed.
 Returns HTTP 202 while verification is in progress, 200 when complete. No
 recommended polling interval or maximum wait time is given.
 
-**Questions:**
+**Update (2026-04-14):** The `encedo-hem-api-doc` (`system/upgrade-firmware.md`)
+adds a **201** status code ("Validation process started") distinct from 202
+("Validation ongoing"). The Encedo Manager polls in a `setTimeout` loop.
+No interval or timeout values are documented.
+
+**Remaining questions:**
 - What is the expected verification duration?
 - Is there a timeout after which the device gives up and returns an error?
 - Same question applies to `GET /api/system/upgrade/check_ui`.
@@ -418,16 +430,13 @@ but the format is only illustrated for disk0. The `status` response shows a
 
 ### OQ-12 — `GET /api/crypto/hmac/verify` and `POST /api/crypto/exdsa/verify` response body not shown
 
-**Affected endpoints:** both verify endpoints
+**Resolved (2026-04-14):** The `encedo-hem-api-doc` repo
+(`crypto/hmac-verify.md`, `crypto/exdsa-verify.md`) confirms:
+- **Valid:** HTTP 200, no response body.
+- **Invalid / failed:** HTTP 406 ("Operation failed (verification failed)").
 
-Both are described as "Response 200: HMAC is valid" / "Response 200: Signature valid"
-with no example JSON body. It is unclear whether the body is `{}`, absent, or
-contains a confirmation field.
-
-**Questions:**
-- What is the exact response body on successful verification?
-- Is there a body that distinguishes "valid" from "invalid" (vs. relying solely
-  on HTTP status codes)?
+The distinction is by HTTP status code only — there is no JSON body for
+either outcome.
 
 ---
 
@@ -474,26 +483,26 @@ has no documented size limit. The current stub allocates 1024 bytes for it.
 
 ## Summary table
 
-| ID | Severity | Topic | Blocks |
-|---|---|---|---|
-| OQ-1 | Critical | Broker URL returns 404 | `hem_auth_ext_pair`, `hem_auth_ext_login` |
-| OQ-2 | Critical | Broker request/response format | Same |
-| OQ-3 | Critical | `epk` generation and encryption | Same |
-| OQ-4 | Significant | `lbl` field undocumented | Minor — library ignores it |
-| OQ-5 | Significant | `ctx` in eJWT payload undocumented | Minor — library omits it |
-| OQ-6 | Significant | `update` response format | `hem_key_update` |
-| OQ-7 | Significant | Search pattern minimum length | `hem_key_search` |
-| OQ-8 | Significant | Log entry field names | `hem_logger_download` |
-| OQ-9 | Significant | Firmware binary upload format | `hem_upgrade_upload_fw/ui` |
-| OQ-10 | Significant | `check_fw` polling interval | `hem_upgrade_check_fw` |
-| OQ-11 | Significant | Storage scope format for disk N | `hem_storage_unlock/lock` |
-| OQ-12 | Significant | Verify endpoints response body | `hem_hmac_verify`, `hem_verify` |
-| OQ-13 | Minor | `genuine` blob max size | Buffer sizing |
-| OQ-14 | Minor | Checkin/challenge blob max sizes | Buffer sizing in bindings |
-| OQ-15 | Minor | Broker `reply` field max size | Buffer sizing |
-| OQ-16 | Critical | `keymgmt:get` rejects `keymgmt:list` scope (spec wrong) | All bindings using `hem_key_get` |
-| OQ-17 | Critical | List endpoint silently caps page size at ~15 (undocumented) | Any paginated list operation |
-| OQ-18 | Significant | `keymgmt:update` requires `label` even for descr-only update | `hem_key_update` |
-| OQ-19 | Significant | NIST ECC default mode is ECDH-only; signing fails with 406 | `hem_key_create` + `hem_sign` |
-| OQ-20 | Significant | `keymgmt:import` returns 406 on duplicate public key (undocumented) | `hem_key_import` |
-| OQ-21 | Significant | `status.https` returned over HTTPS, contradicting upstream "HTTP-only" spec | Field semantics in all bindings |
+| ID | Severity | Status | Topic | Blocks |
+|---|---|---|---|---|
+| OQ-1 | Critical | **Resolved** | Broker URLs and flow documented | — |
+| OQ-2 | Critical | **Largely resolved** | Broker request/response format | Polling endpoint still unknown |
+| OQ-3 | Critical | **Resolved** | `epk` comes from broker `/notify/session` | — |
+| OQ-4 | Significant | **Resolved** | `lbl` = device label | — |
+| OQ-5 | Significant | Partially resolved | `ctx` in eJWT payload undocumented | Minor — library omits it |
+| OQ-6 | Significant | Open | `update` response format | `hem_key_update` |
+| OQ-7 | Significant | Open | Search pattern minimum length | `hem_key_search` |
+| OQ-8 | Significant | Partially resolved | Log entry field names; chain verification documented | `hem_logger_download` |
+| OQ-9 | Significant | **Resolved** | Firmware binary upload format | — |
+| OQ-10 | Significant | Open | `check_fw` polling interval (201/202 codes now known) | `hem_upgrade_check_fw` |
+| OQ-11 | Significant | **Resolved** | Storage scope format for disk N | — |
+| OQ-12 | Significant | **Resolved** | Verify: 200 = valid (no body), 406 = failed | — |
+| OQ-13 | Minor | Open | `genuine` blob max size | Buffer sizing |
+| OQ-14 | Minor | Open | Checkin/challenge blob max sizes | Buffer sizing in bindings |
+| OQ-15 | Minor | Open | Broker `reply` field max size | Buffer sizing |
+| OQ-16 | Critical | **Resolved** | Scope is `keymgmt:get`, not `keymgmt:list` | — |
+| OQ-17 | Critical | **Resolved** | List page size default/cap is 15 | — |
+| OQ-18 | Significant | Open | `keymgmt:update` requires `label` (docs say optional, device disagrees) | `hem_key_update` |
+| OQ-19 | Significant | Open | NIST ECC default mode is ECDH-only; signing fails with 406 | `hem_key_create` + `hem_sign` |
+| OQ-20 | Significant | Open | `keymgmt:import` returns 406 on duplicate public key (undocumented) | `hem_key_import` |
+| OQ-21 | Significant | Partially resolved | `status.https` = "HTTPS availability", not HTTP-only conditional | Field semantics in all bindings |

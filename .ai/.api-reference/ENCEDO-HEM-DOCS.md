@@ -1,2 +1,2 @@
-https://docs.encedo.com/hem-api/preliminary/quick-start
-https://docs.encedo.com/hem-api/reference/api-reference
+Encedo HEMP rest api documentation:
+https://github.com/KajtomatO/encedo-hem-api-doc

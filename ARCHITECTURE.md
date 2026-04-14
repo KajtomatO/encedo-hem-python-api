@@ -598,7 +598,7 @@ The library does not expose a "master scope" shortcut. Every authenticated opera
 
 ### Rate limiting / brute-force protection
 
-The device enforces its own protection per `HEM-REST-API-DESIGN.md` §2.2 (`POST /api/auth/token`): minimum 500 ms per response, growing to 1500 ms after 3 failed auths, resetting after ~15 s of success. The library does not reproduce this client-side — we trust the device — but we also do not retry 401s in tight loops (see above) so we can't accidentally amplify a lockout.
+The device enforces its own protection per the API docs (`POST /api/auth/token`): minimum 500 ms per response, growing to 1500 ms after 3 failed auths, resetting after ~15 s of success. The library does not reproduce this client-side — we trust the device — but we also do not retry 401s in tight loops (see above) so we can't accidentally amplify a lockout.
 
 ### Dependency supply chain
 
