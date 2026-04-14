@@ -19,7 +19,8 @@ operations happen on the device. The library handles:
 - Token caching and automatic re-authentication
 - The two-phase internet check-in flow
 
-The device REST API is documented in `HEM-REST-API-DESIGN.md`.
+The device REST API is documented in the `encedo-hem-api-doc` repo (endpoint
+reference with Encedo Manager source code cross-references).
 
 ---
 
@@ -29,7 +30,7 @@ The device REST API is documented in `HEM-REST-API-DESIGN.md`.
 
 The device uses HTTPS (TLS 1.3) but its certificate is self-signed or issued by
 the Encedo CA, not a public CA. **TLS peer/host verification must be disabled.**
-Device authenticity is established out-of-band via the check-in protocol (Section 5).
+Device authenticity is established out-of-band via the check-in protocol (Section 6).
 
 In libcurl terms: `CURLOPT_SSL_VERIFYPEER = 0`, `CURLOPT_SSL_VERIFYHOST = 0`.
 In Python `requests`: `verify=False`. In Rust `reqwest`: `.danger_accept_invalid_certs(true)`.
@@ -171,7 +172,16 @@ previous token already covers that KID.
 - Cached tokens should be considered expired **60 seconds before** their `exp`
   to account for clock skew and network latency.
 
-### 3.6 Role
+### 3.6 Auth throttling (FPT_AFL.1)
+
+The device enforces brute-force protection on `POST /api/auth/token`:
+- Minimum response time: **500 ms**
+- After 3 failed attempts: response time increases to **1500 ms** (3×)
+- Throttle resets after ~15 seconds of successful authentications
+
+Do not retry 401s in tight loops.
+
+### 3.7 Role
 
 - `HEM_ROLE_USER` (`sub` = `U`) -- regular operations
 - `HEM_ROLE_MASTER` (`sub` = `M`) -- administrative operations
@@ -179,7 +189,7 @@ previous token already covers that KID.
 Role is implicit in which X25519 key was used to initialize the device.
 The passphrase for user and master are different; use the correct one.
 
-### 3.7 Sensitive material handling
+### 3.8 Sensitive material handling
 
 - Zero the 32-byte PBKDF2 seed and the 32-byte ECDH shared secret immediately
   after constructing the eJWT.
@@ -188,14 +198,67 @@ The passphrase for user and master are different; use the correct one.
 
 ---
 
-## 4. Key management
+## 4. Device personalization (auth/init)
 
-### 4.1 KID format
+`POST /api/auth/init` initializes an un-personalized device. The eJWT payload
+includes a `cfg` object with the full device configuration:
+
+```json
+{
+  "jti": "<from_challenge>",
+  "aud": "<device_spk>",
+  "exp": "<from_challenge>",
+  "iat": "<current_timestamp>",
+  "iss": "<admin_public_key_base64>",
+  "cfg": {
+    "masterkey": "<admin_x25519_pubkey_b64>",
+    "userkey": "<user_x25519_pubkey_b64>",
+    "user": "User Name",
+    "email": "user@example.com",
+    "hostname": "prefix.ence.do",
+    "ip": "192.168.7.1",
+    "storage_mode": 81,
+    "storage_disk0size": 8388608,
+    "dnsd": false,
+    "trusted_ts": true,
+    "trusted_backend": true,
+    "allow_keysearch": true,
+    "gen_csr": true,
+    "origin": "*"
+  }
+}
+```
+
+| Config field | Type | Description |
+|---|---|---|
+| `masterkey` | string | Admin X25519 public key (base64) |
+| `userkey` | string | User X25519 public key (base64) |
+| `user` | string | User display name |
+| `email` | string | User email |
+| `hostname` | string | Device FQDN |
+| `ip` | string | Device IP address (PPA only, EPA ignores) |
+| `storage_mode` | integer | Storage configuration (PPA only) |
+| `storage_disk0size` | integer | Disk0 size in bytes (PPA only) |
+| `dnsd` | boolean | Enable DNS daemon (PPA only) |
+| `trusted_ts` | boolean | Trust backend timestamps |
+| `trusted_backend` | boolean | Trust backend for check-in |
+| `allow_keysearch` | boolean | Allow unauthenticated key search by `descr` |
+| `gen_csr` | boolean | Generate CSR during init |
+| `origin` | string | CORS origin |
+
+Response: `{ "instanceid", "token", "csr", "genuine" }`.
+Returns **406** if device is already initialized.
+
+---
+
+## 5. Key management
+
+### 5.1 KID format
 
 Key IDs are **32 lowercase hex characters** (128-bit identifiers), e.g.:
 `0382e3eab596598b1f3582ef90b61a0e`
 
-### 4.2 Key type strings
+### 5.2 Key type strings
 
 Pass these exactly as shown to `/api/keymgmt/create`:
 
@@ -208,7 +271,7 @@ Pass these exactly as shown to `/api/keymgmt/create`:
 | Post-Quantum KEM | `MLKEM512`, `MLKEM768`, `MLKEM1024` |
 | Post-Quantum DSA | `MLDSA44`, `MLDSA65`, `MLDSA87` |
 
-### 4.2.1 List pagination
+### 5.2.1 List pagination
 
 `GET /api/keymgmt/list/{offset}/{limit}` has a documented **default `limit` of 15**
 when omitted. Empirically the device also caps the *honoured* limit at 15 even
@@ -217,14 +280,20 @@ maximum effective page size and always paginate via `offset` until
 `offset + listed >= total`. Do **not** use `listed < requested_limit` as the
 end-of-list signal.
 
-### 4.3 Key type string in list response
+### 5.3 Key type string in list response
 
 The `type` field in a list or get response is a **comma-separated attribute string**,
 not the creation type. Example: `"PKEY,ECDH,ExDSA,SECP256R1"`. Parse it by
 splitting on `,` -- the last element is the algorithm; earlier elements are flags
 (`PKEY` = has private key, `ECDH` = supports ECDH, `ExDSA` = supports signing).
 
-### 4.4 Key deletion and FLS state
+### 5.4 Key search
+
+`POST /api/keymgmt/search` returns **HTTP 404** when no keys match the pattern
+(not an empty list). The `descr` value is base64-encoded; prefix with `^` for
+starts-with matching.
+
+### 5.5 Key deletion and FLS state
 
 `DELETE /api/keymgmt/delete/{kid}` returns **HTTP 409** if the device is in a
 failure state (`fls_state != 0`). Handle this gracefully. The device's FLS state
@@ -242,7 +311,7 @@ unaffected at FLS=4.
 
 ---
 
-## 5. Check-in protocol
+## 6. Check-in protocol
 
 Check-in synchronizes the device with the Encedo backend, sets the RTC clock,
 and verifies firmware integrity. It requires **outbound internet access** to
@@ -267,9 +336,9 @@ The device's `ts` field in `/api/system/status` will be non-null after check-in.
 
 ---
 
-## 6. Crypto operations
+## 7. Crypto operations
 
-### 6.1 Encrypt / Decrypt
+### 7.1 Encrypt / Decrypt
 
 All message fields are **standard base64 with padding** in both directions.
 
@@ -301,7 +370,7 @@ For CBC: IV is present, tag is absent. For ECB: neither IV nor tag.
 may not have TLS operational (status `https: false`) during early setup, crypto
 calls may fail with HTTP 418 until TLS is configured via check-in + provisioning.
 
-### 6.2 Algorithm strings
+### 7.2 Algorithm strings
 
 AES modes: `AES128-ECB`, `AES192-ECB`, `AES256-ECB`,
            `AES128-CBC`, `AES192-CBC`, `AES256-CBC`,
@@ -310,11 +379,53 @@ AES modes: `AES128-ECB`, `AES192-ECB`, `AES256-ECB`,
 ECB requires message length to be a multiple of 16 bytes.
 CBC and GCM accept any length (CBC uses PKCS#7 padding).
 
+### 7.3 ECDH-derived crypto keys
+
+All crypto endpoints (`hmac/hash`, `hmac/verify`, `cipher/encrypt`, `cipher/decrypt`,
+`cipher/wrap`, `cipher/unwrap`) accept optional `ext_kid` or `pubkey` fields. When
+provided, the operation key is derived on-device via ECDH rather than using `kid`
+directly:
+
+- **HMAC**: `HMAC_key = Hash(X25519(kid_priv, peer_pub))`. The `alg` field selects
+  the hash algorithm used for both the derivation and the HMAC itself.
+- **Cipher**: `raw = X25519(kid_priv, peer_pub)` → `aesKey = HKDF-SHA256(raw, salt=nil, info="encedo-aes", L=32)`.
+
+Use `ext_kid` to reference an imported peer public key by KID, or `pubkey` to pass
+a raw base64-encoded peer public key. They are mutually exclusive.
+
+### 7.4 Key wrap / unwrap (RFC 3394)
+
+`POST /api/crypto/cipher/wrap` and `unwrap` use NIST AES Key Wrap:
+- `alg`: `AES128`, `AES192`, or `AES256` (not the `-ECB`/`-GCM` suffixed forms)
+- `msg`: key material to wrap must be a **multiple of 8 bytes**, minimum 16 bytes
+- Response field: `wrapped` (wrap) or `unwrapped` (unwrap)
+
+### 7.5 Signing algorithms and `ctx` field
+
+| Key Type | Algorithms |
+|---|---|
+| ED25519 | `Ed25519`, `Ed25519ph`, `Ed25519ctx` |
+| ED448 | `Ed448`, `Ed448ph` |
+| SECP256R1/K1 | `SHA256WithECDSA`, `SHA384WithECDSA`, `SHA512WithECDSA` |
+| SECP384R1 | `SHA256WithECDSA`, `SHA384WithECDSA`, `SHA512WithECDSA` |
+| SECP521R1 | `SHA256WithECDSA`, `SHA384WithECDSA`, `SHA512WithECDSA` |
+
+The `ctx` field (base64-encoded context data) is **required** for `Ed25519ph`,
+`Ed25519ctx`, `Ed448`, and `Ed448ph`. Omit for all other algorithms.
+
+### 7.6 Verify endpoints
+
+Both `POST /api/crypto/hmac/verify` and `POST /api/crypto/exdsa/verify` return:
+- **HTTP 200** (no body) on success
+- **HTTP 406** on verification failure
+
+There is no JSON body distinguishing valid from invalid — use the status code.
+
 ---
 
-## 7. Device status quirks
+## 8. Device status quirks
 
-### 7.1 `inited` field -- inverted logic
+### 8.1 `inited` field -- inverted logic
 
 In `GET /api/system/status`:
 - If the JSON object **contains the key `inited`** → device is **NOT** initialized
@@ -325,14 +436,14 @@ This is opposite to intuition. The C implementation uses:
 out->initialized = !cJSON_HasObjectItem(root, "inited");
 ```
 
-### 7.2 `ts` field absence
+### 8.2 `ts` field absence
 
 The `ts` (RTC time) field is absent from the status response when the RTC
 is not set (before check-in). When present, the wire format is an ISO 8601
 string such as `"2022-03-16T18:17:27Z"`, **not** a Unix integer (corrected
 under MVP-OQ-1). Treat absence as `None`.
 
-### 7.3 `hostname` field in status vs config
+### 8.3 `hostname` field in status vs config
 
 `GET /api/system/status` returns `hostname` **only** when the request `Host`
 header differs from the device's configured hostname (per upstream spec,
@@ -345,7 +456,7 @@ call config just to get eid.
 
 ---
 
-## 8. PPA vs EPA differences
+## 9. PPA vs EPA differences
 
 | Feature | PPA (USB) | EPA (rack) |
 |---|---|---|
@@ -359,7 +470,7 @@ Detect form factor from `GET /api/system/version` → `hwv` field.
 
 ---
 
-## 9. Error handling reference
+## 10. Error handling reference
 
 | HTTP Status | Meaning | Library action |
 |---|---|---|
@@ -368,14 +479,14 @@ Detect form factor from `GET /api/system/version` → `hwv` field.
 | 401 | Missing or invalid JWT | Re-authenticate and retry once |
 | 403 | Wrong scope or role | Check scope string; may need different token |
 | 404 | Endpoint not available (EPA vs PPA) or key not found | Surface as not-found error |
-| 406 | Device already initialized (auth/init only) | Non-fatal |
+| 406 | Operation failed: device already initialized (auth/init), verification failed (hmac/verify, exdsa/verify), duplicate key (keymgmt/import) | Context-dependent |
 | 409 | Device in FLS failure state | Surface as device-failure error |
 | 413 | POST body too large (>7300 bytes) | Validate before sending |
 | 418 | TLS required for this endpoint | Device needs TLS provisioning |
 
 ---
 
-## 10. C library structure (for reference bindings)
+## 11. C library structure (for reference bindings)
 
 ```
 include/hem/
@@ -403,7 +514,7 @@ this before making its HTTP request.
 
 ---
 
-## 11. Dependency summary
+## 12. Dependency summary
 
 | Dependency | Purpose | Notes |
 |---|---|---|

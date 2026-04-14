@@ -155,3 +155,47 @@ class EncryptResult:
     ciphertext: bytes
     iv: bytes | None
     tag: bytes | None
+
+
+@dataclass(frozen=True, slots=True)
+class HmacResult:
+    """Result of ``POST /api/crypto/hmac/hash``."""
+
+    mac: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class SignResult:
+    """Result of ``POST /api/crypto/exdsa/sign`` or ``POST /api/crypto/pqc/mldsa/sign``."""
+
+    signature: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class EcdhResult:
+    """Result of ``POST /api/crypto/ecdh``."""
+
+    shared_secret: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class WrapResult:
+    """Result of ``POST /api/crypto/cipher/wrap``."""
+
+    wrapped: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class MlKemEncapsResult:
+    """Result of ``POST /api/crypto/pqc/mlkem/encaps``."""
+
+    ciphertext: bytes
+    shared_secret: bytes
+    alg: str  # MLKEM512, MLKEM768, or MLKEM1024
+
+
+@dataclass(frozen=True, slots=True)
+class MlKemDecapsResult:
+    """Result of ``POST /api/crypto/pqc/mlkem/decaps``."""
+
+    shared_secret: bytes

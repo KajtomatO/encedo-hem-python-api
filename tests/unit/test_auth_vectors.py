@@ -16,7 +16,7 @@ import respx
 
 from encedo_hem._base64 import b64url_nopad_decode
 from encedo_hem.auth import Auth, build_ejwt
-from encedo_hem.errors import HemAuthError
+from encedo_hem.errors import HemAuthError, HemRtcNotSetError
 from encedo_hem.models import AuthChallenge
 from encedo_hem.transport import Transport
 
@@ -275,6 +275,36 @@ def test_auth_raises_when_token_missing_from_response() -> None:
             )
             router.post("https://device.local/api/auth/token").mock(
                 return_value=httpx.Response(200, json={})
+            )
+            auth = Auth(transport, lambda: b"correct horse battery staple")
+            with pytest.raises(HemAuthError):
+                auth.ensure_token("keymgmt:gen")
+    finally:
+        transport.close()
+
+
+def test_auth_403_on_challenge_raises_rtc_not_set() -> None:
+    """GET /api/auth/token returning 403 means the device RTC is not set."""
+    transport = Transport("device.local")
+    try:
+        with respx.mock() as router:
+            router.get("https://device.local/api/auth/token").mock(
+                return_value=httpx.Response(403, json={"error": "forbidden"})
+            )
+            auth = Auth(transport, lambda: b"correct horse battery staple")
+            with pytest.raises(HemRtcNotSetError, match="RTC is not set"):
+                auth.ensure_token("keymgmt:gen")
+    finally:
+        transport.close()
+
+
+def test_auth_403_on_challenge_is_subclass_of_auth_error() -> None:
+    """HemRtcNotSetError should also be catchable as HemAuthError."""
+    transport = Transport("device.local")
+    try:
+        with respx.mock() as router:
+            router.get("https://device.local/api/auth/token").mock(
+                return_value=httpx.Response(403, json={"error": "forbidden"})
             )
             auth = Auth(transport, lambda: b"correct horse battery staple")
             with pytest.raises(HemAuthError):

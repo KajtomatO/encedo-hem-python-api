@@ -38,6 +38,16 @@ class HemAuthError(HemError):
     """HTTP 401/403 -- missing/invalid token or wrong scope."""
 
 
+class HemRtcNotSetError(HemAuthError):
+    """HTTP 403 on an unauthenticated auth endpoint -- device RTC is not set.
+
+    The device returns 403 from ``GET /api/auth/token`` and
+    ``POST /api/auth/token`` when the RTC clock has not been set via
+    check-in.  Run ``client.system.checkin()`` (or use
+    ``auto_checkin=True``) before authenticating.
+    """
+
+
 class HemNotFoundError(HemError):
     """HTTP 404 -- endpoint or resource not found."""
 

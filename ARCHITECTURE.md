@@ -42,7 +42,7 @@ The MVP flow layers on top: `client.ensure_ready()` calls `system.status()`, det
 - **Endpoints grouped by REST area, not by flat function list.** `client.system.status()` reads better than `client.system_status()` and matches the REST URL structure, making the mapping between docs and code obvious.
 - **Typed models over raw dicts.** All endpoint returns are dataclasses. Base64 fields are `bytes` on the Python side; the library handles encode/decode at the boundary so callers pass and receive raw bytes.
 - **Errors are exceptions, not return codes.** Every non-2xx device response raises a specific `HemError` subclass; 401 triggers one automatic retry after re-auth and then re-raises.
-- **Phased scope.** Phase 1 (MVP) ships `system` + `auth` + `keymgmt` + `crypto.cipher` — exactly what the MVP script needs. Phase 2 adds HMAC/ExDSA/ECDH/PQC. Phase 3 adds `logger`, `storage`, `upgrade`. External (remote) authentication is **explicitly deferred** until upstream open questions OQ-1/OQ-2/OQ-3 are resolved; the stubs raise `NotImplementedError` with a pointer to `OPEN-QUESTIONS.md`.
+- **Phased scope.** Phase 1 (MVP) ships `system` + `auth` + `keymgmt` + `crypto.cipher` — exactly what the MVP script needs. Phase 2 adds HMAC/ExDSA/ECDH/PQC. Phase 3 adds `logger`, `storage`, `upgrade`. External (remote) authentication is deferred to Phase 4; the broker flow is now documented (OQ-1/2/3 resolved 2026-04-14) but implementation requires cloud integration testing.
 - **Sensitive material hygiene.** Passphrase held in a single buffer on the client, zeroed on `close()`. PBKDF2 seed and ECDH shared secret are local variables in `auth.build_ejwt()` and overwritten after use (best-effort in Python, but documented).
 
 ---
@@ -129,6 +129,7 @@ The arrow from each API module to `auth` represents *scope enforcement*: API met
   - `Auth.invalidate(scope: str | None = None)` — drops a cached token (or all of them); called by the 401-retry logic in API methods.
   - `Auth.build_ejwt(challenge: AuthChallenge, scope: str, passphrase: bytes) -> str` — pure function, deterministic given inputs; isolated for unit testability against known test vectors.
 - **Data:** In-memory `dict[str, CachedToken]` keyed on scope string. `CachedToken` holds the JWT, its `exp`, and the scope. Passphrase lives on `HemClient`, not here — `auth` borrows it for the duration of `ensure_token` and does not retain it.
+- **KDF note:** The library uses **PBKDF2-SHA256** (600,000 iterations) as the KDF, matching the HEM API test suite. The Encedo Manager web UI uses **Argon2** (time=10, mem=8192) instead. The device accepts tokens from both KDFs — authentication is KDF-agnostic — but the KDF used must match the one that was active during `auth/init` (device personalization). If the device was initialized via the Encedo Manager, an Argon2 path would be needed; this is not implemented in v1.
 - **Security rules it enforces:**
   - Passphrase never appears in logs, tracebacks, or exception messages.
   - PBKDF2 seed and ECDH shared secret are bound to local variables and zeroed via `bytearray` overwrite before `build_ejwt` returns (best-effort in Python; documented as such).
@@ -141,7 +142,7 @@ The arrow from each API module to `auth` represents *scope enforcement*: API met
 - **Technology:** Plain Python class, implements `__enter__` / `__exit__` for `with HemClient(...) as hem:` usage.
 - **Interfaces:**
   - `HemClient(host: str, passphrase: str, *, role: Role = Role.USER, auto_checkin: bool = True, strict_hardware: bool = True, timeout: float = 30.0, logger: logging.Logger | None = None)`
-  - Namespaces: `.system`, `.auth_flow` (init/pair stubs), `.keys`, `.crypto`, `.logger`, `.storage`, `.upgrade`. Unimplemented namespaces raise `NotImplementedError` on first attribute access with a pointer to `OPEN-QUESTIONS.md`.
+  - Namespaces: `.system`, `.auth_flow` (init/pair/remote-login — Phase 4), `.keys`, `.crypto`, `.logger`, `.storage`, `.upgrade`. Unimplemented namespaces raise `NotImplementedError` on first attribute access.
   - `.ensure_ready()` — idempotent; runs version probe + optional check-in; safe to call multiple times. First authenticated endpoint call triggers this automatically.
   - `.username` (from `lbl`), `.hardware` (enum: `PPA | EPA | UNKNOWN`), `.firmware_version` — cached metadata.
   - `.close()` — zeroes the passphrase buffer, closes transport.
@@ -152,7 +153,7 @@ The arrow from each API module to `auth` represents *scope enforcement*: API met
 - **Responsibility:** All `/api/system/*` endpoints — `version`, `status`, `checkin` (both phases), `config` (get/set), `reboot`, `shutdown` (PPA only), `selftest`.
 - **Interfaces (Phase 1 subset):**
   - `version() -> DeviceVersion` — unauthenticated.
-  - `status() -> DeviceStatus` — unauthenticated; `ts` is `Optional[int]`, `initialized` is derived from the **absence** of the `inited` key (inverted logic per `INTEGRATION_GUIDE.md` §7.1).
+  - `status() -> DeviceStatus` — unauthenticated; `ts` is `Optional[str]` (ISO 8601, e.g. `"2022-03-16T18:17:27Z"`), `initialized` is derived from the **absence** of the `inited` key (inverted logic per `INTEGRATION_GUIDE.md` §8.1).
   - `checkin() -> None` — runs the full three-step bounce: `GET /api/system/checkin` → `POST https://api.encedo.com/checkin` → `POST /api/system/checkin`. Forwards the opaque blobs verbatim.
   - `config() -> DeviceConfig` — scope `system:config`.
 - **Data:** None — everything returned is a fresh dataclass built from the JSON response.
@@ -163,7 +164,7 @@ The arrow from each API module to `auth` represents *scope enforcement*: API met
 - **Interfaces (Phase 1 subset):**
   - `create(label: str, type: KeyType, *, descr: bytes | None = None, mode: KeyMode | None = None) -> KeyId` — scope `keymgmt:gen`. For NIST ECC key types (`SECP*`), if `mode` is omitted we default to `KeyMode.ECDH_EXDSA`; the device's own default is ECDH-only, which silently breaks signing (OQ-19). We preempt that by making the library default permissive and documenting the behaviour.
   - `list(*, page_size: int = 10) -> Iterator[KeyInfo]` — scope `keymgmt:list`. Auto-paginates via `offset`; treats 15 as the device's effective maximum page size (OQ-17) and always uses `offset + listed >= total` as the end-of-list signal rather than `listed < requested_limit`.
-  - `get(kid: KeyId) -> KeyDetails` — scope **`keymgmt:use:<kid>`** (OQ-16 resolution: the spec says `keymgmt:list` works too but firmware v1.2.2-DIAG only accepts `keymgmt:use:<kid>`; we use the narrow scope that works everywhere).
+  - `get(kid: KeyId) -> KeyDetails` — scope **`keymgmt:use:<kid>`** (OQ-16: spec scope is `keymgmt:get`, not `keymgmt:list` as originally documented; firmware v1.2.2-DIAG only accepts `keymgmt:use:<kid>` empirically, so we use the narrow scope that works everywhere).
   - `update(kid: KeyId, *, label: str, descr: bytes | None = None) -> None` — scope `keymgmt:upd`. `label` is mandatory on the wire even for descr-only updates (OQ-18), so the library signature reflects that: `label` is positional-required.
   - `delete(kid: KeyId) -> None` — scope `keymgmt:del`. Surfaces FLS-failure (HTTP 409) as `HemDeviceFailureError`.
 - **Data:** None. The `KeyInfo.type` field is parsed from the comma-separated attribute string (`"PKEY,ECDH,ExDSA,SECP256R1"`) into a structured `ParsedKeyType(flags=..., algorithm=...)` dataclass so callers don't string-split.
@@ -184,9 +185,9 @@ Plain `@dataclass(frozen=True, slots=True)` definitions. Representative:
 @dataclass(frozen=True, slots=True)
 class DeviceStatus:
     fls_state: int
-    ts: int | None           # None when RTC unset
-    hostname: str
-    https: bool
+    ts: str | None           # ISO 8601 string; None when RTC unset
+    hostname: str | None     # absent when Host header matches device hostname
+    https: bool | None       # HTTPS availability; absent in some contexts
     initialized: bool        # True when 'inited' key is ABSENT
     format: str | None
     uptime: int | None
@@ -207,6 +208,7 @@ HemError                       (base)
 ├── HemTransportError          (connection refused, TLS handshake, timeout)
 ├── HemBadRequestError         (400)
 ├── HemAuthError               (401, 403)
+│   └── HemRtcNotSetError      (403 on auth challenge — device RTC not set, run checkin)
 ├── HemNotFoundError           (404, key-not-found)
 ├── HemNotSupportedError       (endpoint not available on current hardware)
 ├── HemNotAcceptableError      (406 -- device already initialised, ECDH too small, duplicate import, etc.)
@@ -243,7 +245,7 @@ All responses are converted to frozen dataclasses at the `api.*` module boundary
 | Dataclass | Fields (abbreviated) | Returned by |
 |---|---|---|
 | `DeviceVersion` | `hwv`, `blv`, `fwv`, `fws`, `uis` | `system.version()` |
-| `DeviceStatus` | `fls_state`, `ts: int \| None`, `hostname`, `https`, `initialized: bool`, `uptime`, `temp`, `storage` | `system.status()` |
+| `DeviceStatus` | `fls_state`, `ts: str \| None`, `hostname: str \| None`, `https: bool \| None`, `initialized: bool`, `uptime`, `temp`, `storage` | `system.status()` |
 | `DeviceConfig` | `eid`, `user`, `email`, `hostname`, `uts` | `system.config()` |
 | `AuthChallenge` | `eid`, `spk`, `jti`, `exp`, `lbl` | internal to `auth` |
 | `CachedToken` | `jwt`, `scope`, `exp` | internal to `auth` |
@@ -282,8 +284,8 @@ sequenceDiagram
         T-->>HC: response
         HC->>T: POST /api/system/checkin, response
         T->>D: POST /api/system/checkin
-        D-->>T: {"status": "OK"}
-        T-->>HC: ok
+        D-->>T: {"status", "newcrt", "newfws", "newuis"}
+        T-->>HC: ok (update signals discarded in Phase 1; Phase 3 surfaces them)
     end
     HC-->>C: (transparent — proceed to the original call)
 ```
@@ -434,7 +436,7 @@ encedo-hem-python-api/
 │           ├── system.py
 │           ├── keymgmt.py
 │           ├── crypto.py       # cipher subnamespace in Phase 1; hmac/exdsa/ecdh/pqc in Phase 2
-│           ├── auth_flow.py    # init/pair — stubs until OQ-1/2/3 resolved
+│           ├── auth_flow.py    # init/pair/remote-login — OQ-1/2/3 resolved; Phase 4
 │           ├── logger.py       # Phase 3
 │           ├── storage.py      # Phase 3
 │           └── upgrade.py      # Phase 3
@@ -591,14 +593,14 @@ The library does not expose a "master scope" shortcut. Every authenticated opera
 ### Device failure state (FLS)
 
 - `GET /api/system/status`'s `fls_state` is a bitmask for entropy/integrity/temperature failures.
-- The library does not block crypto calls on FLS != 0 automatically — per `INTEGRATION_GUIDE.md` §4.4, temperature failures (`FLS=4`) can transiently trip without affecting crypto. What it does:
+- The library does not block crypto calls on FLS != 0 automatically — per `INTEGRATION_GUIDE.md` §5.5, temperature failures (`FLS=4`) can transiently trip without affecting crypto. What it does:
   - Surface the FLS state on `HemClient.last_status.fls_state` after any status call.
   - Translate HTTP 409 responses to `HemDeviceFailureError` (which is what `/api/keymgmt/delete` returns when FLS is set).
   - Log a WARNING the first time we see a non-zero `fls_state` in a session.
 
 ### Rate limiting / brute-force protection
 
-The device enforces its own protection per `HEM-REST-API-DESIGN.md` §2.2 (`POST /api/auth/token`): minimum 500 ms per response, growing to 1500 ms after 3 failed auths, resetting after ~15 s of success. The library does not reproduce this client-side — we trust the device — but we also do not retry 401s in tight loops (see above) so we can't accidentally amplify a lockout.
+The device enforces its own protection per the API docs (`POST /api/auth/token`): minimum 500 ms per response, growing to 1500 ms after 3 failed auths, resetting after ~15 s of success. The library does not reproduce this client-side — we trust the device — but we also do not retry 401s in tight loops (see above) so we can't accidentally amplify a lockout.
 
 ### Dependency supply chain
 
@@ -616,109 +618,19 @@ The device enforces its own protection per `HEM-REST-API-DESIGN.md` §2.2 (`POST
 
 ## Implementation Plan
 
-Work is broken into four phases. Phase 1 is the MVP from the brief — it is **independently deliverable and testable** on its own (the MVP script runs end-to-end against a real device). Each subsequent phase extends the library without changing the Phase 1 public surface.
+Work is broken into four phases. Phase 1 is the MVP — **independently deliverable and testable** (the MVP script runs end-to-end against a real device). Each subsequent phase extends the library without changing the Phase 1 public surface.
 
 Dependencies flow top-to-bottom: Phase 0 is prerequisite for everything; Phase 1 is prerequisite for Phases 2 and 3; Phases 2 and 3 are independent of each other and can be done in parallel or reordered.
 
-### Phase 0: Repo scaffolding
+Detailed implementation specs live in `.ai/.spec/`. Completed phases are in `.ai/.spec/implemented/`.
 
-**Goal:** A greenlit project skeleton that lint, type-check, and test runners all accept, with one no-op module importable.
-
-**Tasks:**
-- [ ] Create `pyproject.toml` (name, version 0.1.0.dev0, deps, build backend, tool configs).
-- [ ] Create `src/encedo_hem/__init__.py` with a placeholder `__version__` read via `importlib.metadata`.
-- [ ] Create `tests/unit/test_smoke.py` with a single `import encedo_hem` assertion.
-- [ ] Create `.github/workflows/ci.yml` running ruff + mypy + pytest on 3.10/3.11/3.12.
-- [ ] Create `.gitignore` additions for `.venv/`, `dist/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`.
-- [ ] `uv sync --extra dev` works locally, `uv run pytest` is green.
-
-**Deliverable:** A green CI run on the first PR. No functionality, just a tested scaffold.
-
-**Dependencies:** None.
-
----
-
-### Phase 1: MVP — system + auth + keymgmt + cipher
-
-**Goal:** `python examples/mvp.py` runs against a real PPA/EPA, printing status, doing check-in, creating a key, round-tripping an AES-256-GCM message, and deleting the key. This is exactly the MVP checklist from `.ai/app-description.txt`.
-
-**Tasks:**
-- [ ] `errors.py`: full exception hierarchy + HTTP-status-to-exception mapping function.
-- [ ] `_base64.py`: helpers for standard-base64 (with padding) and base64url-nopad; unit tests against known vectors.
-- [ ] `transport.py`:
-  - [ ] `Transport` class over `httpx.Client(verify=False, limits=Limits(max_keepalive_connections=0))`.
-  - [ ] `Connection: close` header on every device request.
-  - [ ] Local 7300-byte pre-flight guard → `HemPayloadTooLargeError`.
-  - [ ] `backend_post(url, json)` using a separate httpx client with `verify=True`.
-  - [ ] Status-to-exception translation.
-- [ ] `models.py`: `DeviceVersion`, `DeviceStatus` (with inverted `initialized` logic), `DeviceConfig`, `AuthChallenge`, `CachedToken`, `KeyId`, `ParsedKeyType`, `KeyInfo`, `KeyDetails`, `EncryptResult`.
-- [ ] `enums.py`: `Role`, `KeyType`, `KeyMode`, `CipherAlg`.
-- [ ] `auth.py`:
-  - [ ] `build_ejwt(challenge, scope, passphrase)` — PBKDF2-SHA256 (600 000 iters) → X25519 → ECDH → HMAC-SHA256 → JWT assembly. Zero the seed and shared secret at function exit.
-  - [ ] `Auth` class with `ensure_token(scope)` / `invalidate(scope)` and the 60-second expiry buffer.
-  - [ ] Unit tests against fixed vectors (mock challenge, mock passphrase → deterministic eJWT).
-- [ ] `api/system.py`: `version`, `status`, `checkin` (full three-step bounce), `config`, `set_config`, `reboot`, `selftest`.
-- [ ] `api/keymgmt.py`: `create`, `list` (auto-paginated iterator capped at 15/page), `get` (scope `keymgmt:use:<kid>`), `update` (mandatory label), `delete`.
-- [ ] `api/crypto.py`: `cipher.encrypt`, `cipher.decrypt` for ECB/CBC/GCM.
-- [ ] `client.py`: `HemClient` facade with `auto_checkin` and `strict_hardware` flags, `ensure_ready()`, namespace attributes, `__enter__`/`__exit__`, `close()` with passphrase zeroing.
-- [ ] `examples/mvp.py`: the script in the "Canonical example" section above.
-- [ ] `tests/integration/test_mvp_flow.py`: pytest fixture that skips unless `HEM_HOST` and `HEM_PASSPHRASE` are set; runs the full MVP flow.
-
-**Deliverable:** Tagged `v0.1.0`. A user can `pip install encedo-hem`, write the MVP script in the README, point it at their device, and see the round-trip succeed.
-
-**Dependencies:** Phase 0.
-
----
-
-### Phase 2: Full crypto surface
-
-**Goal:** Cover every `/api/crypto/*` endpoint and every `/api/keymgmt/*` endpoint not yet in Phase 1.
-
-**Tasks:**
-- [ ] `api/keymgmt.py`: `derive`, `import`, `search`.
-- [ ] `api/crypto.py::hmac`: `hash`, `verify`.
-- [ ] `api/crypto.py::exdsa`: `sign`, `verify` (including the `ctx` parameter for Ed25519ph/Ed25519ctx/Ed448/Ed448ph).
-- [ ] `api/crypto.py::ecdh`: single-call key agreement.
-- [ ] `api/crypto.py::cipher`: `wrap`, `unwrap` (RFC 3394).
-- [ ] `api/crypto.py::pqc.mlkem`: `encaps`, `decaps`.
-- [ ] `api/crypto.py::pqc.mldsa`: `sign`, `verify`.
-- [ ] New dataclasses: `HmacResult`, `SignResult`, `EcdhResult`, `WrapResult`, `MlKemEncapsResult`, etc.
-- [ ] Unit tests for each, using respx to mock device responses.
-- [ ] Extended integration test script (`examples/crypto_smoke.py`) exercising one key of each supported type.
-
-**Deliverable:** `v0.2.0`. A caller can use any crypto endpoint the device exposes (except external auth).
-
-**Dependencies:** Phase 1.
-
----
-
-### Phase 3: Admin, storage, upgrade, logger
-
-**Goal:** Everything except remote authentication.
-
-**Tasks:**
-- [ ] `api/logger.py`: `key` (audit log public key), `list` (PPA), `get` (PPA), plus a helper that verifies the Ed25519-signed nonce to prove the key came from this device.
-- [ ] `api/storage.py`: `unlock`, `lock` for disk0/disk1 (PPA only, `HemNotSupportedError` on EPA).
-- [ ] `api/upgrade.py`: `upload_fw` / `check_fw` / `install_fw` and the `_ui` equivalents, using the newly-documented `application/octet-stream` + `Content-Disposition` transport (OQ-9 resolved).
-- [ ] `api/system.py`: `shutdown` (PPA), `config_attestation`, `config_provisioning`.
-- [ ] Binary-body path in `transport.py` (`Transport.post_binary(path, body, filename, token)`).
-- [ ] Tests for each.
-
-**Deliverable:** `v0.3.0`. Near-complete device coverage.
-
-**Dependencies:** Phase 1. Independent of Phase 2.
-
----
-
-### Phase 4 (deferred): External (remote) authentication
-
-**Goal:** Implement `auth_flow.pair()` and `auth_flow.remote_login()`.
-
-**Blocked on:** Resolution of OQ-1 (broker URL), OQ-2 (broker message format), and OQ-3 (epk ownership). Until those are answered upstream, these methods raise `NotImplementedError` with the text `"blocked on OQ-1/2/3 — see .ai/.api-reference/OPEN-QUESTIONS.md"`.
-
-**Deliverable:** `v0.4.0` (or later).
-
-**Dependencies:** External — upstream documentation.
+| Phase | Status | Deliverable | Spec |
+|---|---|---|---|
+| Phase 0: Repo scaffolding | **Implemented** | Green CI | [implemented/0000](/.ai/.spec/implemented/0000_MainImplementation_Phase0_Overview.md) |
+| Phase 1: MVP (system + auth + keymgmt + cipher) | **Implemented** (2026-04-08) | `v0.1.0` | [implemented/0010](/.ai/.spec/implemented/0010_MainImplementation_Phase1_Overview.md) |
+| Phase 2: Full crypto surface | Planned | `v0.2.0` | [0020](/.ai/.spec/0020_MainImplementation_Phase2_Overview.md) (8 step files) |
+| Phase 3: Admin, storage, upgrade, logger | Not yet detailed | `v0.3.0` | [0030](/.ai/.spec/0030_MainImplementation_Phase3_Overview.md) |
+| Phase 4: External (remote) authentication | Not yet detailed | `v0.4.0` | [0040](/.ai/.spec/0040_MainImplementation_Phase4_Overview.md) |
 
 ---
 
@@ -735,7 +647,7 @@ Dependencies flow top-to-bottom: Phase 0 is prerequisite for everything; Phase 1
 | List pagination cap of 15 is not per-firmware constant, causing missed keys on a device we haven't tested. | M | L | Pagination loop uses `offset + listed >= total` as the termination condition; any honoured page size from 1 to `total` works. A unit test exercises pages of 1, 10, 15, 16, and 64. |
 | `cryptography` wheel unavailable on a caller's platform (very old Linux, unusual CPU). | L | L | Document the requirement. `cryptography` ships manylinux/musllinux/macOS/Windows wheels for all mainstream platforms; the floor is already `>=42` which predates the most recent tightening. |
 | Python 3.10 goes EOL during the library's lifetime. | L | M | Track Python's support schedule; bump the floor in a major release. `requires-python` in `pyproject.toml` means pip will refuse to install on unsupported versions rather than silently breaking. |
-| External auth remains blocked indefinitely (OQ-1/2/3 never resolved). | M | M | Phase 4 is isolated. The rest of the library ships without it. Stubs raise a clear `NotImplementedError` pointing at `OPEN-QUESTIONS.md`. |
+| External auth protocol fully documented but not yet implemented. | L | M | OQ-1/2/3 fully resolved (2026-04-14). Polling is `GET notify/event/check/{eventid}`, cancel via `DELETE notify/event/{eventid}`, ~900ms cadence. Phase 4 can proceed without protocol discovery. |
 | Device in FLS failure state during MVP run produces confusing errors. | L | L | `HemClient.ensure_ready()` logs a WARNING if `fls_state != 0`; the MVP example script prints `fls_state` as its first line so the operator sees the state before anything else happens. |
 
 ---
@@ -754,8 +666,8 @@ Dependencies flow top-to-bottom: Phase 0 is prerequisite for everything; Phase 1
 | Scope-driven auto-auth via `auth.ensure_token(scope)`. | Every authenticated endpoint knows its scope; the single chokepoint means one path to audit for token handling. Mirrors the `hem_auth_ensure` pattern proven in the C libhem. | Explicit `login(scope)` on the caller side (leaks complexity); global token with wildcard scopes (device does not support this). | 2026-04-08 |
 | Check-in is automatic by default (`auto_checkin=True`). | The brief calls out "automatically providing check-in" as a QoL requirement. Making it automatic hides the three-step bounce from 99% of callers. | Manual-only (simpler but violates the brief); automatic-without-opt-out (unacceptable — some test scenarios need to control exactly when the device talks to the backend). | 2026-04-08 |
 | Hardware detection with `strict_hardware=True` default and opt-out. | Raising `HemNotSupportedError` locally before the wire gives a clean error message instead of a generic 404; opt-out handles DIAG firmware and unknown future revisions. | Always strict (breaks future hardware); never strict (confusing 404s from mismatched endpoints). | 2026-04-08 |
-| `keys.get(kid)` uses scope `keymgmt:use:<kid>`, not `keymgmt:list`. | OQ-16: firmware v1.2.2-DIAG rejects `keymgmt:list` for `get`. `keymgmt:use:<kid>` works on all observed firmware. | `keymgmt:list` (per original spec, but empirically 403); `keymgmt:get` (per upstream docs, but unverified on DIAG). | 2026-04-08 |
-| Default NIST ECC key mode is `ECDH,ExDSA` in `keys.create`. | OQ-19: omitting `mode` silently creates ECDH-only keys that break signing. Defaulting to the combined mode matches caller intuition. | Match device default (silently-broken sign); require explicit mode (safe but noisy for every ECC key). | 2026-04-08 |
-| External (remote) authentication stubbed with `NotImplementedError`. | OQ-1/2/3 are genuinely blocking — we don't know the broker URL, response format, or epk ownership. Shipping a stub that clearly points at `OPEN-QUESTIONS.md` is more honest than a guess that breaks in production. | Best-guess implementation (likely wrong, hard to debug); omitting the methods entirely (hides a published feature of the device from callers). | 2026-04-08 |
+| `keys.get(kid)` uses scope `keymgmt:use:<kid>`, not `keymgmt:get`. | OQ-16: the spec scope is `keymgmt:get` (confirmed by `encedo-hem-api-doc`), not `keymgmt:list` as originally documented. Firmware v1.2.2-DIAG empirically only accepts `keymgmt:use:<kid>`. Using the narrow per-key scope works everywhere and is more restrictive. | `keymgmt:get` (per spec, but unverified on DIAG); `keymgmt:list` (original wrong spec, empirically 403). | 2026-04-08 (updated 2026-04-14) |
+| Default NIST ECC key mode is `ECDH,ExDSA` in `keys.create`. | OQ-19 (resolved): omitting `mode` silently creates ECDH-only keys that break signing. HEM test suite confirms all NIST ECC keys use `"ECDH,ExDSA"`. Defaulting to the combined mode matches caller intuition and canonical usage. | Match device default (silently-broken sign); require explicit mode (safe but noisy for every ECC key). | 2026-04-08 (confirmed 2026-04-14) |
+| External (remote) authentication deferred to Phase 4 (stubs for now). | OQ-1/2/3 were blocking at design time (2026-04-08) and resolved on 2026-04-14. The broker URLs, flow, and `epk` origin are now documented. Implementation deferred because it requires cloud integration testing and mobile app pairing, not because the protocol is unknown. | Best-guess implementation (no longer necessary — flow is documented); immediate Phase 4 start (possible but deprioritised vs. Phases 2/3). | 2026-04-08 (updated 2026-04-14) |
 | `KeyInfo.type` is parsed into `ParsedKeyType(flags, algorithm)` instead of exposed as a string. | The type field is a comma-separated attribute list (`"PKEY,ECDH,ExDSA,SECP256R1"`); callers should not string-split. | Raw string (caller burden, easy to get wrong); full `dataclass(type=KeyType)` (lossy — can't represent the flag combinations). | 2026-04-08 |
 | `pytest` + `respx` for unit tests, env-gated integration tests. | `respx` mocks httpx at the transport layer, so we test real request construction without real network. Env-gating keeps CI green when nobody has a device attached. | Record-and-replay fixtures (brittle to header changes); integration tests in CI (requires shared device, flaky). | 2026-04-08 |

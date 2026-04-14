@@ -64,7 +64,12 @@ class SystemAPI:
         )
 
     def checkin(self) -> None:
-        """Run the full three-step check-in bounce. No auth required."""
+        """Run the full three-step check-in bounce. No auth required.
+
+        The device POST response contains ``newcrt``, ``newfws``, ``newuis``,
+        and ``status`` fields signalling available updates. These are discarded
+        in Phase 1; Phase 3 (upgrade support) will surface them.
+        """
         challenge = self._client._transport.request("GET", "/api/system/checkin")
         backend_response = self._client._transport.backend_post("/checkin", challenge)
         self._client._transport.request("POST", "/api/system/checkin", json_body=backend_response)

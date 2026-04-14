@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-14
+
+### Added
+- `HemClient.keys.derive()` — derive a new key via ECDH (`POST /api/keymgmt/derive`).
+- `HemClient.keys.import_key()` — import an external public key (`POST /api/keymgmt/import`).
+- `HemClient.keys.search()` — search keys by description prefix with auto-pagination (`POST /api/keymgmt/search`).
+- `HemClient.crypto.hmac.hash()` / `.verify()` — HMAC hash and verify with optional ECDH-derived key support (`POST /api/crypto/hmac/*`).
+- `HemClient.crypto.exdsa.sign()` / `.verify()` — ExDSA sign and verify for ECDSA and EdDSA algorithms (`POST /api/crypto/exdsa/*`).
+- `HemClient.crypto.ecdh.exchange()` — raw or hashed ECDH key exchange (`POST /api/crypto/ecdh`).
+- `HemClient.crypto.cipher.wrap()` / `.unwrap()` — AES Key Wrap / Unwrap per RFC 3394 (`POST /api/crypto/cipher/wrap|unwrap`).
+- `HemClient.crypto.pqc.mlkem.encaps()` / `.decaps()` — ML-KEM encapsulation and decapsulation per FIPS 203 (`POST /api/crypto/pqc/mlkem/*`).
+- `HemClient.crypto.pqc.mldsa.sign()` / `.verify()` — ML-DSA sign and verify per FIPS 204 (`POST /api/crypto/pqc/mldsa/*`).
+- `HashAlg`, `SignAlg`, `WrapAlg` enumerations.
+- `HmacResult`, `SignResult`, `EcdhResult`, `WrapResult`, `MlKemEncapsResult`, `MlKemDecapsResult` dataclasses.
+- 56 new unit tests (138 total); 9 integration test files covering all new endpoints.
+- `examples/crypto_smoke.py` — end-to-end smoke test exercising all Phase 2 crypto endpoints. Verified against `my.ence.do` on 2026-04-14.
+
+### Fixed
+- **OQ-23**: `keys.derive()` now requests scope `keymgmt:gen` instead of `keymgmt:ecdh` — the documented scope is rejected with 403 by firmware; the HEM test suite empirically uses `keymgmt:gen`.
+
+### Known issues
+- **OQ-22**: `crypto.pqc.mldsa.verify()` raises `HemError` instead of returning `False` when the signature is invalid — the device returns HTTP 795 instead of the documented 406. Integration test skipped pending upstream clarification.
+
 ## [0.1.0] - 2026-04-09
 
 ### Added

@@ -25,7 +25,7 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import (
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 from ._base64 import b64_std_decode, b64_std_encode, b64url_nopad_encode
-from .errors import HemAuthError
+from .errors import HemAuthError, HemRtcNotSetError
 from .models import AuthChallenge, CachedToken
 from .transport import Transport
 
@@ -84,7 +84,17 @@ class Auth:
             self._cache.pop(scope, None)
 
     def _login(self, scope: str, now: int) -> str:
-        raw = self._transport.request("GET", "/api/auth/token")
+        try:
+            raw = self._transport.request("GET", "/api/auth/token")
+        except HemAuthError as exc:
+            if exc.status_code == 403:
+                raise HemRtcNotSetError(
+                    "device RTC is not set — run client.system.checkin() or "
+                    "use auto_checkin=True before authenticating",
+                    status_code=403,
+                    endpoint="/api/auth/token",
+                ) from exc
+            raise
         challenge = AuthChallenge(
             eid=raw["eid"],
             spk=raw["spk"],
