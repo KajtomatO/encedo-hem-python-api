@@ -676,17 +676,322 @@ Dependencies flow top-to-bottom: Phase 0 is prerequisite for everything; Phase 1
 
 **Goal:** Cover every `/api/crypto/*` endpoint and every `/api/keymgmt/*` endpoint not yet in Phase 1.
 
-**Tasks:**
-- [ ] `api/keymgmt.py`: `derive`, `import`, `search`.
-- [ ] `api/crypto.py::hmac`: `hash`, `verify`.
-- [ ] `api/crypto.py::exdsa`: `sign`, `verify` (including the `ctx` parameter for Ed25519ph/Ed25519ctx/Ed448/Ed448ph).
-- [ ] `api/crypto.py::ecdh`: single-call key agreement.
-- [ ] `api/crypto.py::cipher`: `wrap`, `unwrap` (RFC 3394).
-- [ ] `api/crypto.py::pqc.mlkem`: `encaps`, `decaps`.
-- [ ] `api/crypto.py::pqc.mldsa`: `sign`, `verify`.
-- [ ] New dataclasses: `HmacResult`, `SignResult`, `EcdhResult`, `WrapResult`, `MlKemEncapsResult`, etc.
-- [ ] Unit tests for each, using respx to mock device responses.
-- [ ] Extended integration test script (`examples/crypto_smoke.py`) exercising one key of each supported type.
+#### 2.1 New enums
+
+New enums in `enums.py`:
+
+```python
+class HashAlg(Enum):
+    """Hash algorithm for HMAC and ECDH operations."""
+    SHA2_256 = "SHA2-256"
+    SHA2_384 = "SHA2-384"
+    SHA2_512 = "SHA2-512"
+    SHA3_256 = "SHA3-256"
+    SHA3_384 = "SHA3-384"
+    SHA3_512 = "SHA3-512"
+
+class SignAlg(Enum):
+    """Signing algorithm for exdsa operations."""
+    SHA256_ECDSA = "SHA256WithECDSA"
+    SHA384_ECDSA = "SHA384WithECDSA"
+    SHA512_ECDSA = "SHA512WithECDSA"
+    ED25519 = "Ed25519"
+    ED25519PH = "Ed25519ph"
+    ED25519CTX = "Ed25519ctx"
+    ED448 = "Ed448"
+    ED448PH = "Ed448ph"
+
+    @property
+    def requires_ctx(self) -> bool:
+        """True when the ``ctx`` parameter is mandatory on the wire."""
+        return self in {SignAlg.ED25519PH, SignAlg.ED25519CTX, SignAlg.ED448, SignAlg.ED448PH}
+
+class WrapAlg(Enum):
+    """AES key-wrap algorithm (RFC 3394). No mode suffix — distinct from CipherAlg."""
+    AES128 = "AES128"
+    AES192 = "AES192"
+    AES256 = "AES256"
+```
+
+#### 2.2 New dataclasses in `models.py`
+
+```python
+@dataclass(frozen=True, slots=True)
+class HmacResult:
+    """Result of ``POST /api/crypto/hmac/hash``."""
+    mac: bytes  # decoded from base64
+
+@dataclass(frozen=True, slots=True)
+class SignResult:
+    """Result of ``POST /api/crypto/exdsa/sign`` or ``POST /api/crypto/pqc/mldsa/sign``."""
+    signature: bytes  # decoded from base64
+
+@dataclass(frozen=True, slots=True)
+class EcdhResult:
+    """Result of ``POST /api/crypto/ecdh``."""
+    shared_secret: bytes  # decoded from base64, raw or hashed depending on alg
+
+@dataclass(frozen=True, slots=True)
+class WrapResult:
+    """Result of ``POST /api/crypto/cipher/wrap``."""
+    wrapped: bytes  # decoded from base64
+
+@dataclass(frozen=True, slots=True)
+class MlKemEncapsResult:
+    """Result of ``POST /api/crypto/pqc/mlkem/encaps``."""
+    ciphertext: bytes  # decoded from base64, send to peer
+    shared_secret: bytes  # decoded from base64, use for symmetric crypto
+    alg: str  # MLKEM512, MLKEM768, or MLKEM1024
+
+@dataclass(frozen=True, slots=True)
+class MlKemDecapsResult:
+    """Result of ``POST /api/crypto/pqc/mlkem/decaps``."""
+    shared_secret: bytes  # decoded from base64, matches encapsulator's ss
+```
+
+#### 2.3 KeyMgmtAPI additions (`api/keymgmt.py`)
+
+**`derive(kid, label, type, *, descr, ext_kid, mode, pubkey) -> KeyId`** — scope `keymgmt:ecdh`
+
+```
+POST /api/keymgmt/derive
+{kid, label, type, descr?, ext_kid?, mode?, pubkey?}  →  {kid}
+```
+- `kid`: source key for ECDH derivation (32-char hex).
+- `label`: label for the derived key (max 31 chars).
+- `type`: `KeyType` of the new key to create.
+- `ext_kid`: on-device external public key for the ECDH peer (mutually exclusive with `pubkey`).
+- `pubkey`: raw bytes of external public key (mutually exclusive with `ext_kid`).
+- `mode`: `KeyMode` — same OQ-19 defaulting as `create()` for NIST ECC.
+- Returns new `KeyId`.
+
+**`import_key(label, pubkey, type, *, descr, mode) -> KeyId`** — scope `keymgmt:imp`
+
+```
+POST /api/keymgmt/import
+{label, pubkey, type, mode?, descr?}  →  {kid}
+```
+- `label`: max 31 chars.
+- `pubkey`: raw bytes of the public key material.
+- `type`: `KeyType` — supported types include all ECC, curve, EdDSA, ML-KEM, and ML-DSA.
+- `mode`: `KeyMode` — for NIST ECC, same OQ-19 defaulting as `create()`.
+- **OQ-20 quirk:** returns HTTP 406 on duplicate public key. Surface as `HemNotAcceptableError` (existing). Docstring should note the duplicate-key meaning of 406 on this endpoint.
+- Named `import_key` to avoid shadowing the `import` keyword.
+
+**`search(descr, *, offset, limit) -> Iterator[KeyInfo]`** — scope `keymgmt:search`
+
+```
+POST /api/keymgmt/search
+{descr, offset?, limit?}  →  {offset, total, listed, list}
+```
+- `descr`: base64-encoded search pattern. OQ-7: convention is `'^' + base64(raw_prefix)` where `raw_prefix` is ≥6 bytes.
+- Auto-paginated iterator, same pattern as `list()` — calls with increasing `offset`.
+- **404 quirk:** device returns HTTP 404 on no match (not an empty list). Catch `HemNotFoundError` internally, yield nothing.
+- Page size capped at 15 (same as `list()`).
+- Unauthenticated path: if `allow_keysearch` is enabled on device and pattern ≥6 bytes, `Authorization` header may be omitted. For simplicity, always authenticate in v0.2; document the unauthenticated option for v0.3+.
+
+#### 2.4 Crypto sub-namespaces (`api/crypto.py`)
+
+Extend `CryptoAPI.__init__` to wire up new sub-namespaces:
+
+```python
+class CryptoAPI:
+    def __init__(self, client: HemClient) -> None:
+        self.cipher = CipherAPI(client)
+        self.hmac = HmacAPI(client)
+        self.exdsa = ExdsaAPI(client)
+        self.ecdh = EcdhAPI(client)
+        self.pqc = PqcAPI(client)
+```
+
+All crypto endpoints use scope `keymgmt:use:{kid}`. All `msg` fields have a 2048-byte plaintext limit (before base64). All use standard base64 with padding on the wire.
+
+##### 2.4.1 `HmacAPI` — `client.crypto.hmac`
+
+**`hash(kid, msg, *, alg, ext_kid, pubkey) -> HmacResult`**
+
+```
+POST /api/crypto/hmac/hash
+{kid, msg, alg?, ext_kid?, pubkey?}  →  {mac}
+```
+- `alg`: `HashAlg` — optional (device has a default, likely SHA2-256).
+- `ext_kid` / `pubkey`: optional, for ECDH-derived HMAC key. HMAC key = `Hash(X25519(kid_priv, peer_pub))` where `Hash` uses `alg`.
+
+**`verify(kid, msg, mac, *, alg, ext_kid, pubkey) -> bool`**
+
+```
+POST /api/crypto/hmac/verify
+{kid, msg, mac, alg?, ext_kid?, pubkey?}  →  200 (valid) / 406 (invalid)
+```
+- OQ-12: no response body either way. Returns `True` on 200, `False` on 406.
+- Catches `HemNotAcceptableError` (406) internally and returns `False` instead of raising.
+
+##### 2.4.2 `ExdsaAPI` — `client.crypto.exdsa`
+
+**`sign(kid, msg, alg, *, ctx) -> SignResult`**
+
+```
+POST /api/crypto/exdsa/sign
+{kid, msg, alg, ctx?}  →  {sign}
+```
+- `alg`: `SignAlg` — **required**.
+- `ctx`: raw bytes, max 255 bytes. **Required** when `alg.requires_ctx` is True (`Ed25519ph`, `Ed25519ctx`, `Ed448`, `Ed448ph`). Raise `ValueError` if missing for those algorithms.
+- OQ-19: if the key was created without `mode: "ExDSA"` or `"ECDH,ExDSA"`, the device will return 406. Docstring notes this.
+
+**`verify(kid, msg, signature, alg, *, ctx) -> bool`**
+
+```
+POST /api/crypto/exdsa/verify
+{kid, msg, sign, alg, ctx?}  →  200 (valid) / 406 (invalid)
+```
+- Same `ctx` requirements as `sign`. Max 255 bytes.
+- OQ-12: returns `True` on 200, `False` on 406 (no response body either way).
+
+##### 2.4.3 `EcdhAPI` — `client.crypto.ecdh`
+
+**`exchange(kid, *, pubkey, ext_kid, alg) -> EcdhResult`**
+
+```
+POST /api/crypto/ecdh
+{kid, pubkey?, ext_kid?, alg?}  →  {ecdh}
+```
+- Exactly one of `pubkey` (raw bytes) or `ext_kid` (`KeyId`) must be provided. Raise `ValueError` if neither or both.
+- `alg`: `HashAlg | None` — if `None`, returns raw ECDH output. If set, returns `Hash(raw)`.
+- **Note:** not in Encedo Manager; documented in official docs and registered in scopes. Lower confidence on wire-level behaviour — integration test is the verification gate.
+
+##### 2.4.4 `CipherAPI` additions — `wrap` and `unwrap`
+
+Add to existing `CipherAPI` class:
+
+**`wrap(kid, alg, *, msg) -> WrapResult`**
+
+```
+POST /api/crypto/cipher/wrap
+{kid, alg, msg?}  →  {wrapped}
+```
+- `alg`: `WrapAlg` — `AES128`, `AES192`, or `AES256` (not the `-ECB`/`-GCM` forms).
+- `msg`: optional raw bytes to wrap. If omitted, device generates random data and wraps it.
+- **Constraint:** if provided, `msg` length must be a multiple of 8 bytes and ≥16 bytes (RFC 3394). Validate locally, raise `ValueError` if violated.
+- **Note:** official docs page returns 404; schema from HEM test suite. Lower confidence — integration test is the verification gate.
+
+**`unwrap(kid, wrapped, *, alg) -> bytes`**
+
+```
+POST /api/crypto/cipher/unwrap
+{kid, alg, msg}  →  {unwrapped}
+```
+- `alg`: `WrapAlg`.
+- `wrapped`: raw bytes of the wrapped key material.
+- Returns unwrapped plaintext bytes.
+
+##### 2.4.5 `PqcAPI` — `client.crypto.pqc`
+
+```python
+class PqcAPI:
+    def __init__(self, client: HemClient) -> None:
+        self.mlkem = MlKemAPI(client)
+        self.mldsa = MlDsaAPI(client)
+```
+
+##### 2.4.6 `MlKemAPI` — `client.crypto.pqc.mlkem`
+
+**`encaps(kid) -> MlKemEncapsResult`**
+
+```
+POST /api/crypto/pqc/mlkem/encaps
+{kid}  →  {ct, ss, alg}
+```
+- Key must be of type `MLKEM512`, `MLKEM768`, or `MLKEM1024`.
+- Returns ciphertext (send to peer), shared secret (use for symmetric crypto), and algorithm name.
+
+**`decaps(kid, ciphertext) -> MlKemDecapsResult`**
+
+```
+POST /api/crypto/pqc/mlkem/decaps
+{kid, ct}  →  {ss}
+```
+- `ciphertext`: raw bytes of the encapsulation ciphertext.
+- Returns shared secret (should match encapsulator's `ss`).
+
+##### 2.4.7 `MlDsaAPI` — `client.crypto.pqc.mldsa`
+
+**`sign(kid, msg, *, ctx) -> SignResult`**
+
+```
+POST /api/crypto/pqc/mldsa/sign
+{kid, msg, ctx?}  →  {sign, alg}
+```
+- Key must be of type `MLDSA44`, `MLDSA65`, or `MLDSA87`.
+- `ctx`: optional, max 255 bytes.
+- Returns `SignResult` (reuses the same dataclass as `exdsa.sign`).
+
+**`verify(kid, msg, signature, *, ctx) -> bool`**
+
+```
+POST /api/crypto/pqc/mldsa/verify
+{kid, msg, sign, ctx?}  →  200 (valid) / 406 (invalid)
+```
+- `ctx`: optional, max 64 bytes (note: smaller limit than `sign`'s 255).
+- OQ-12: returns `True`/`False` based on status code.
+
+#### 2.5 `__init__.py` exports
+
+Add to `__init__.py` imports and `__all__`:
+- Enums: `HashAlg`, `SignAlg`, `WrapAlg`.
+- Models: `HmacResult`, `SignResult`, `EcdhResult`, `WrapResult`, `MlKemEncapsResult`, `MlKemDecapsResult`.
+
+#### 2.6 Tests
+
+**Unit tests** (respx-mocked, one file per sub-namespace):
+- [ ] `tests/unit/test_keymgmt_derive.py` — mock 200 response, verify `KeyId` returned, verify scope is `keymgmt:ecdh`, verify body fields.
+- [ ] `tests/unit/test_keymgmt_import.py` — mock 200 response, verify `KeyId` returned, verify scope is `keymgmt:imp`. Test 406 duplicate → `HemNotAcceptableError`.
+- [ ] `tests/unit/test_keymgmt_search.py` — mock paginated response. Test 404-on-empty yields nothing. Test `descr` encoding.
+- [ ] `tests/unit/test_crypto_hmac.py` — mock hash response, verify base64 decoding. Test verify returns `True` on 200, `False` on 406.
+- [ ] `tests/unit/test_crypto_exdsa.py` — mock sign response, verify `SignResult`. Test verify 200/406 → bool. Test `ctx` required for `Ed25519ph` (raises `ValueError` if missing).
+- [ ] `tests/unit/test_crypto_ecdh.py` — mock response, verify `EcdhResult`. Test ValueError when neither/both `pubkey`/`ext_kid` given.
+- [ ] `tests/unit/test_crypto_wrap.py` — mock wrap/unwrap. Test wrap constraint validation (8-byte multiple, ≥16). Test `WrapAlg` values on wire.
+- [ ] `tests/unit/test_crypto_pqc.py` — mock mlkem encaps/decaps and mldsa sign/verify. Test verify bool semantics.
+
+**Integration test** (`examples/crypto_smoke.py`):
+- [ ] One key per algorithm family: AES256 (cipher + wrap/unwrap), SECP256R1 (sign/verify + ECDH), ED25519 (sign/verify), SHA2-256 (HMAC hash/verify), MLKEM768 (encaps/decaps), MLDSA65 (sign/verify).
+- [ ] Each test: create key → exercise operation → verify round-trip → delete key.
+- [ ] Skips PQC tests if device firmware doesn't support those key types (catches 400 on create).
+
+#### 2.7 Scope reference table
+
+| Method | Endpoint | Scope |
+|---|---|---|
+| `keys.derive()` | `POST /api/keymgmt/derive` | `keymgmt:ecdh` |
+| `keys.import_key()` | `POST /api/keymgmt/import` | `keymgmt:imp` |
+| `keys.search()` | `POST /api/keymgmt/search` | `keymgmt:search` |
+| `crypto.hmac.hash()` | `POST /api/crypto/hmac/hash` | `keymgmt:use:{kid}` |
+| `crypto.hmac.verify()` | `POST /api/crypto/hmac/verify` | `keymgmt:use:{kid}` |
+| `crypto.exdsa.sign()` | `POST /api/crypto/exdsa/sign` | `keymgmt:use:{kid}` |
+| `crypto.exdsa.verify()` | `POST /api/crypto/exdsa/verify` | `keymgmt:use:{kid}` |
+| `crypto.ecdh.exchange()` | `POST /api/crypto/ecdh` | `keymgmt:use:{kid}` |
+| `crypto.cipher.wrap()` | `POST /api/crypto/cipher/wrap` | `keymgmt:use:{kid}` |
+| `crypto.cipher.unwrap()` | `POST /api/crypto/cipher/unwrap` | `keymgmt:use:{kid}` |
+| `crypto.pqc.mlkem.encaps()` | `POST /api/crypto/pqc/mlkem/encaps` | `keymgmt:use:{kid}` |
+| `crypto.pqc.mlkem.decaps()` | `POST /api/crypto/pqc/mlkem/decaps` | `keymgmt:use:{kid}` |
+| `crypto.pqc.mldsa.sign()` | `POST /api/crypto/pqc/mldsa/sign` | `keymgmt:use:{kid}` |
+| `crypto.pqc.mldsa.verify()` | `POST /api/crypto/pqc/mldsa/verify` | `keymgmt:use:{kid}` |
+
+#### 2.8 Known risks and lower-confidence items
+
+- **`crypto/ecdh`**: documented but absent from Encedo Manager; no Manager-side usage to cross-reference. Integration test is the only validation path.
+- **`cipher/wrap` and `cipher/unwrap`**: official docs return 404; schema from test suite only. Registered in Manager endpoints/scopes but never called from UI. Integration test required.
+- **PQC endpoints** (`mlkem`, `mldsa`): not in Manager (newer firmware). Official docs are the sole source. Key creation exists in Manager, but crypto operations don't. Device firmware may not support PQC on older versions — handle gracefully.
+- **`mldsa/verify` ctx max size discrepancy**: docs say max 64 bytes for verify vs 255 for sign. Validate locally on both.
+
+#### 2.9 Implementation order
+
+1. Enums + dataclasses (no network, pure additions).
+2. `keymgmt` additions (`derive`, `import_key`, `search`) + unit tests — these are straightforward REST wrappers following the Phase 1 pattern.
+3. `HmacAPI` + `ExdsaAPI` + unit tests — highest-value crypto additions, well-documented.
+4. `CipherAPI` additions (`wrap`/`unwrap`) + unit tests — thin wrappers, lower confidence on wire format.
+5. `EcdhAPI` + unit tests — lowest Manager coverage, saved for later.
+6. `PqcAPI` (`MlKemAPI` + `MlDsaAPI`) + unit tests — newest firmware features, may not work on all devices.
+7. `__init__.py` exports, `examples/crypto_smoke.py`.
 
 **Deliverable:** `v0.2.0`. A caller can use any crypto endpoint the device exposes (except external auth).
 
