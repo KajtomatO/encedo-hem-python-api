@@ -48,7 +48,8 @@ def test_derive_returns_key_id() -> None:
     assert result == _NEW_KID
 
 
-def test_derive_scope_is_keymgmt_ecdh() -> None:
+def test_derive_scope_is_keymgmt_gen() -> None:
+    # OQ-23: keymgmt:ecdh is documented but rejected by firmware; keymgmt:gen is used instead.
     posted: list[dict[str, Any]] = []
 
     with _make_client() as client, respx.mock() as router:
@@ -77,7 +78,7 @@ def test_derive_scope_is_keymgmt_ecdh() -> None:
     from encedo_hem._base64 import b64url_nopad_decode
 
     payload = json.loads(b64url_nopad_decode(posted[0]["auth"].split(".")[1]))
-    assert payload["scope"] == "keymgmt:ecdh"
+    assert payload["scope"] == "keymgmt:gen"
 
 
 def test_derive_body_fields() -> None:

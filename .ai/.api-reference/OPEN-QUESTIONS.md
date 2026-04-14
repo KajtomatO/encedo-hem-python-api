@@ -614,6 +614,50 @@ exception instead of returning `False`.
 is it a device error that should propagate? Leaning toward treating it as "invalid
 signature" since that is the semantic context, but confirming with upstream first.
 
+### OQ-23 — `POST /api/keymgmt/derive` scope `keymgmt:ecdh` rejected with HTTP 403
+
+**Status (2026-04-14):** Open — confirmed on firmware during Phase 2 integration tests.
+
+**Affected endpoint:** `POST /api/keymgmt/derive`
+**Confirmed via:** `tests/integration/test_keymgmt_derive.py` against my.ence.do (2026-04-14)
+
+Docs specify the required scope for `keymgmt/derive` as `keymgmt:ecdh`. The device
+returned HTTP **403** when a token with scope `keymgmt:ecdh` was presented.
+
+**Observed behaviour:**
+- Token scope `keymgmt:ecdh` → HTTP 403
+
+**Cross-source evidence (2026-04-14):**
+
+| Source | Scope for `/api/keymgmt/derive` |
+|---|---|
+| `encedo-hem-api-doc/keymgmt/derive.md:13` | `keymgmt:ecdh` **(primary)** or `keymgmt:gen` **(alternative)** |
+| Encedo Manager `_endpoints` (`build.js:9235`) | `keymgmt:ecdh` |
+| Encedo Manager `scopes.js:572,598` | Defines both `keymgmt:ecdh` and `keymgmt:derive` consent entries (but only `keymgmt:ecdh` is wired to the endpoint) |
+| HEM test suite (`test_10.php:56,175`) | Uses **`$token_keygen`**, i.e. a token authorized with scope **`keymgmt:gen`** — and it works end-to-end against real hardware |
+
+**Recommendation:** Switch the Python binding to authorize `keymgmt/derive`
+with **`keymgmt:gen`**. The HEM test suite is the most reliable empirical
+source here — it deliberately reuses the `keymgmt:gen` token across
+create/derive/import and runs green against production firmware. This
+mirrors the pattern seen in OQ-16 (where `keymgmt:list` is documented
+but `keymgmt:get` is actually required for `GET /api/keymgmt/get/{kid}`):
+the "alternative" scope listed in the docs is in practice the only one
+the firmware accepts. The `keymgmt:ecdh` scope registered by Manager is
+an unused artifact of the consent UI.
+
+**Action items:**
+1. Update `keys.derive()` to request `keymgmt:gen` (reuse the existing
+   keygen token where possible).
+2. Retest against my.ence.do — expected: HTTP 200.
+3. File a docs bug upstream: `keymgmt/derive.md` should list
+   `keymgmt:gen` as the working scope and note that `keymgmt:ecdh` is
+   rejected by firmware.
+
+**Impact:** `keymgmt.derive()` currently always raises `HemAuthError`
+with the spec-per scope `keymgmt:ecdh`. Switching to `keymgmt:gen` should
+unblock it with high confidence.
+
 ---
 
 ## Summary table
@@ -642,3 +686,4 @@ signature" since that is the semantic context, but confirming with upstream firs
 | OQ-20 | Significant | **Resolved** | Test suite confirms 406 on duplicate import is expected device behaviour | — |
 | OQ-21 | Significant | **Resolved** | `status.https` = HTTPS listener capability flag; Manager uses it to redirect HTTP→HTTPS | — |
 | OQ-22 | Significant | Open | `mldsa/verify` returns HTTP 795 (not 406) for invalid signature | `mldsa.verify()` raises instead of returning `False` |
+| OQ-23 | Critical | **Workaround identified** | `keymgmt/derive` rejects `keymgmt:ecdh`; use `keymgmt:gen` (per HEM test suite) | Pending retest on my.ence.do |

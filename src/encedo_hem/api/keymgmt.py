@@ -140,7 +140,9 @@ class KeyMgmtAPI:
             mode = KeyMode.ECDH_EXDSA
         if mode is not None:
             body["mode"] = mode.value
-        token = self._client._auth.ensure_token("keymgmt:ecdh")
+        # OQ-23: docs say keymgmt:ecdh but firmware rejects it with 403.
+        # HEM test suite uses keymgmt:gen and succeeds — use that instead.
+        token = self._client._auth.ensure_token("keymgmt:gen")
         raw = self._client._transport.request(
             "POST", "/api/keymgmt/derive", json_body=body, token=token
         )
