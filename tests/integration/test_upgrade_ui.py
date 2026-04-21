@@ -1,4 +1,5 @@
 """Integration tests for UI upgrade flow."""
+
 from __future__ import annotations
 
 import os

@@ -24,6 +24,7 @@ def _challenge() -> dict:
 def _captured_scope(router: respx.MockRouter) -> str:
     """Return the scope embedded in the POST /api/auth/token eJWT."""
     import base64
+
     for call in router.calls:
         if call.request.method == "POST" and "/api/auth/token" in str(call.request.url):
             body = json.loads(call.request.content)

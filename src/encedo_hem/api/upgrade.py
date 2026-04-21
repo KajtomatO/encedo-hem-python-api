@@ -68,9 +68,7 @@ class UpgradeAPI:
         The device will reboot; all cached tokens are invalidated.
         """
         token = self._client._auth.ensure_token("system:upgrade")
-        self._client._transport.request(
-            "GET", "/api/system/upgrade/install_fw", token=token
-        )
+        self._client._transport.request("GET", "/api/system/upgrade/install_fw", token=token)
         self._client._auth.invalidate()
 
     # --- UI ---
@@ -100,9 +98,7 @@ class UpgradeAPI:
     def install_ui(self) -> None:
         """Install the verified UI and reboot the device."""
         token = self._client._auth.ensure_token("system:upgrade")
-        self._client._transport.request(
-            "GET", "/api/system/upgrade/install_ui", token=token
-        )
+        self._client._transport.request("GET", "/api/system/upgrade/install_ui", token=token)
         self._client._auth.invalidate()
 
     # --- bootloader ---
@@ -125,9 +121,7 @@ class UpgradeAPI:
         Discovered in the HEM test suite only — not exposed in the Manager UI.
         """
         token = self._client._auth.ensure_token("system:upgrade")
-        self._client._transport.request(
-            "GET", "/api/system/upgrade/usbmode", token=token
-        )
+        self._client._transport.request("GET", "/api/system/upgrade/usbmode", token=token)
 
     # --- internal ---
 
@@ -147,9 +141,7 @@ class UpgradeAPI:
         if initial_wait > 0:
             time.sleep(initial_wait)
         for _ in range(max_attempts):
-            status, body = self._client._transport.request_no_raise(
-                "GET", path, token=token
-            )
+            status, body = self._client._transport.request_no_raise("GET", path, token=token)
             if status == 200:
                 return FirmwareCheckResult(raw=body)
             if status == 406:

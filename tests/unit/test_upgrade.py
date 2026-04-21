@@ -62,9 +62,7 @@ def test_check_fw_returns_on_200() -> None:
 
     with _make_client() as client, respx.mock() as router:
         _mock_auth(router)
-        router.get("https://device.local/api/system/upgrade/check_fw").mock(
-            side_effect=handler
-        )
+        router.get("https://device.local/api/system/upgrade/check_fw").mock(side_effect=handler)
         with patch("encedo_hem.api.upgrade.time.sleep"):
             result = client.upgrade.check_fw()
 
@@ -85,9 +83,7 @@ def test_check_fw_raises_on_406() -> None:
 
     with _make_client() as client, respx.mock() as router:
         _mock_auth(router)
-        router.get("https://device.local/api/system/upgrade/check_fw").mock(
-            side_effect=handler
-        )
+        router.get("https://device.local/api/system/upgrade/check_fw").mock(side_effect=handler)
         with patch("encedo_hem.api.upgrade.time.sleep"):
             try:
                 client.upgrade.check_fw()

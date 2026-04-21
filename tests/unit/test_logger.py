@@ -32,6 +32,7 @@ def _mock_auth(router: respx.MockRouter) -> None:
 
 def _captured_scope(router: respx.MockRouter) -> str:
     import base64
+
     for call in router.calls:
         if call.request.method == "POST" and "/api/auth/token" in str(call.request.url):
             body = json.loads(call.request.content)
@@ -54,11 +55,14 @@ def test_key_returns_logger_key_info() -> None:
     with _make_client() as client, respx.mock() as router:
         _mock_auth(router)
         router.get("https://device.local/api/logger/key").mock(
-            return_value=httpx.Response(200, json={
-                "key": "abc123==",
-                "nonce": "nonce==",
-                "nonce_signed": "signed==",
-            })
+            return_value=httpx.Response(
+                200,
+                json={
+                    "key": "abc123==",
+                    "nonce": "nonce==",
+                    "nonce_signed": "signed==",
+                },
+            )
         )
         result = client.logger.key()
     assert isinstance(result, LoggerKeyInfo)

@@ -1,4 +1,5 @@
 """Integration tests for Phase 3 system endpoints."""
+
 from __future__ import annotations
 
 import time
@@ -55,6 +56,7 @@ def test_shutdown(hem: HemClient) -> None:
     Skipped in normal test runs — set HEM_ALLOW_SHUTDOWN=1 to execute.
     """
     import os
+
     if not os.environ.get("HEM_ALLOW_SHUTDOWN"):
         pytest.skip("set HEM_ALLOW_SHUTDOWN=1 to run")
 

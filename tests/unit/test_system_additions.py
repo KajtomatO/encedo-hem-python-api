@@ -52,6 +52,7 @@ def _make_client() -> HemClient:
 
 # --- reboot scope fix ---
 
+
 def test_reboot_uses_system_upgrade_scope() -> None:
     with _make_client() as client, respx.mock() as router:
         router.get("https://device.local/api/auth/token").mock(
@@ -68,6 +69,7 @@ def test_reboot_uses_system_upgrade_scope() -> None:
 
 
 # --- shutdown ---
+
 
 def test_shutdown_uses_system_shutdown_scope() -> None:
     with _make_client() as client, respx.mock() as router:
@@ -86,16 +88,20 @@ def test_shutdown_uses_system_shutdown_scope() -> None:
 
 # --- selftest ---
 
+
 def test_selftest_returns_result() -> None:
     with _make_client() as client, respx.mock() as router:
         _mock_auth(router)
         router.get("https://device.local/api/system/selftest").mock(
-            return_value=httpx.Response(200, json={
-                "last_selftest_ts": 1700000000,
-                "fls_state": 0,
-                "kat_busy": False,
-                "se_state": 1,
-            })
+            return_value=httpx.Response(
+                200,
+                json={
+                    "last_selftest_ts": 1700000000,
+                    "fls_state": 0,
+                    "kat_busy": False,
+                    "se_state": 1,
+                },
+            )
         )
         result = client.system.selftest()
     assert isinstance(result, SelftestResult)
@@ -109,19 +115,23 @@ def test_selftest_unknown_fields_ignored() -> None:
     with _make_client() as client, respx.mock() as router:
         _mock_auth(router)
         router.get("https://device.local/api/system/selftest").mock(
-            return_value=httpx.Response(200, json={
-                "last_selftest_ts": 0,
-                "fls_state": 0,
-                "kat_busy": False,
-                "se_state": 0,
-                "future_field": "ignored",
-            })
+            return_value=httpx.Response(
+                200,
+                json={
+                    "last_selftest_ts": 0,
+                    "fls_state": 0,
+                    "kat_busy": False,
+                    "se_state": 0,
+                    "future_field": "ignored",
+                },
+            )
         )
         result = client.system.selftest()
     assert result.fls_state == 0
 
 
 # --- config_attestation ---
+
 
 def test_config_attestation_returns_result() -> None:
     with _make_client() as client, respx.mock() as router:
@@ -138,6 +148,7 @@ def test_config_attestation_returns_result() -> None:
 
 # --- config_provisioning ---
 
+
 def test_config_provisioning_posts_body() -> None:
     captured: list[dict] = []
 
@@ -146,9 +157,7 @@ def test_config_provisioning_posts_body() -> None:
         return httpx.Response(200, json={})
 
     with _make_client() as client, respx.mock() as router:
-        router.post("https://device.local/api/system/config/provisioning").mock(
-            side_effect=handler
-        )
+        router.post("https://device.local/api/system/config/provisioning").mock(side_effect=handler)
         client.system.config_provisioning("Alice", "alice@example.com", "secret")
 
     assert captured[0]["user"] == "Alice"

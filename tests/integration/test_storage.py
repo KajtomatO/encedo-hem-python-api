@@ -1,4 +1,5 @@
 """Integration tests for storage lock/unlock (PPA only)."""
+
 from __future__ import annotations
 
 import time

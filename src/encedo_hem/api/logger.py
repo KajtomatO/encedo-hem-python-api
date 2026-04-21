@@ -58,9 +58,7 @@ class LoggerAPI:
         Scope: ``logger:get``.
         """
         token = self._client._auth.ensure_token("logger:get")
-        return self._client._transport.request_text(
-            "GET", f"/api/logger/{entry_id}", token=token
-        )
+        return self._client._transport.request_text("GET", f"/api/logger/{entry_id}", token=token)
 
     def delete(self, entry_id: str) -> None:
         """Delete a log entry.
@@ -68,6 +66,4 @@ class LoggerAPI:
         Scope: ``logger:del``.
         """
         token = self._client._auth.ensure_token("logger:del")
-        self._client._transport.request(
-            "DELETE", f"/api/logger/{entry_id}", token=token
-        )
+        self._client._transport.request("DELETE", f"/api/logger/{entry_id}", token=token)

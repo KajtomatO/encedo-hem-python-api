@@ -67,9 +67,7 @@ def test_post_binary_sends_body() -> None:
         return httpx.Response(200, json={})
 
     with respx.mock() as router:
-        router.post("https://device.local/api/system/upgrade/upload_fw").mock(
-            side_effect=handler
-        )
+        router.post("https://device.local/api/system/upgrade/upload_fw").mock(side_effect=handler)
         t = _make_transport()
         payload = b"\xde\xad\xbe\xef"
         t.post_binary("/api/system/upgrade/upload_fw", payload, "fw.bin")

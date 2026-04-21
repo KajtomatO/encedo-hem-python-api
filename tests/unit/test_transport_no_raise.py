@@ -15,6 +15,7 @@ def _make_transport() -> Transport:
 
 # --- request_no_raise ---
 
+
 def test_no_raise_returns_status_and_body_on_200() -> None:
     with respx.mock() as router:
         router.get("https://device.local/api/system/upgrade/check_fw").mock(
@@ -48,6 +49,7 @@ def test_no_raise_returns_406_without_raising() -> None:
 
 
 # --- request_text ---
+
 
 def test_request_text_returns_string() -> None:
     with respx.mock() as router:

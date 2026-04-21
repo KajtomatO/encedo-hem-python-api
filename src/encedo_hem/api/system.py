@@ -135,9 +135,7 @@ class SystemAPI:
         ``system:config`` since any valid token works.
         """
         token = self._client._auth.ensure_token("system:config")
-        raw = self._client._transport.request(
-            "GET", "/api/system/config/attestation", token=token
-        )
+        raw = self._client._transport.request("GET", "/api/system/config/attestation", token=token)
         return AttestationResult(crt=raw["crt"], genuine=bool(raw["genuine"]))
 
     def config_provisioning(
@@ -162,6 +160,4 @@ class SystemAPI:
         }
         if hostname is not None:
             body["hostname"] = hostname
-        self._client._transport.request(
-            "POST", "/api/system/config/provisioning", json_body=body
-        )
+        self._client._transport.request("POST", "/api/system/config/provisioning", json_body=body)

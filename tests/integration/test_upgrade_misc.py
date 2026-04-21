@@ -1,4 +1,5 @@
 """Integration tests for bootloader upload and USB mode."""
+
 from __future__ import annotations
 
 import os

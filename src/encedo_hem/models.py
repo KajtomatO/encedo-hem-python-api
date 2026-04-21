@@ -215,7 +215,7 @@ class SelftestResult:
 class AttestationResult:
     """Result of ``GET /api/system/config/attestation``."""
 
-    crt: str    # PEM certificate
+    crt: str  # PEM certificate
     genuine: bool
 
 
@@ -223,9 +223,9 @@ class AttestationResult:
 class LoggerKeyInfo:
     """Result of ``GET /api/logger/key``."""
 
-    key: str            # audit log public key (base64)
-    nonce: str          # current nonce (base64)
-    nonce_signed: str   # nonce signed by the device (base64)
+    key: str  # audit log public key (base64)
+    nonce: str  # current nonce (base64)
+    nonce_signed: str  # nonce signed by the device (base64)
 
 
 @dataclass(frozen=True, slots=True)

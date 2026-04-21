@@ -32,9 +32,7 @@ class StorageAPI:
         suffix = "/rw" if disk.value.endswith(":rw") else "/ro"
         scope = f"storage:{disk.value}"
         token = self._client._auth.ensure_token(scope)
-        self._client._transport.request(
-            "GET", f"/api/storage/unlock{suffix}", token=token
-        )
+        self._client._transport.request("GET", f"/api/storage/unlock{suffix}", token=token)
 
     def lock(self, disk: StorageDisk = StorageDisk.DISK0) -> None:
         """Lock the specified storage disk.

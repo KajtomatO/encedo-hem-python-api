@@ -5,6 +5,7 @@ These verify the most basic pre-conditions before exercising any API:
   2. GET /api/system/version succeeds (API layer).
   3. Device reports itself as initialised.
 """
+
 from __future__ import annotations
 
 from encedo_hem import HemClient
