@@ -4,7 +4,17 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 
 from .client import HemClient
-from .enums import CipherAlg, HardwareForm, HashAlg, KeyMode, KeyType, Role, SignAlg, WrapAlg
+from .enums import (
+    CipherAlg,
+    HardwareForm,
+    HashAlg,
+    KeyMode,
+    KeyType,
+    Role,
+    SignAlg,
+    StorageDisk,
+    WrapAlg,
+)
 from .errors import (
     HemAuthError,
     HemBadRequestError,
@@ -19,18 +29,22 @@ from .errors import (
     HemTransportError,
 )
 from .models import (
+    AttestationResult,
     DeviceConfig,
     DeviceStatus,
     DeviceVersion,
     EcdhResult,
     EncryptResult,
+    FirmwareCheckResult,
     HmacResult,
     KeyDetails,
     KeyId,
     KeyInfo,
+    LoggerKeyInfo,
     MlKemDecapsResult,
     MlKemEncapsResult,
     ParsedKeyType,
+    SelftestResult,
     SignResult,
     WrapResult,
 )
@@ -41,12 +55,14 @@ except PackageNotFoundError:  # pragma: no cover
     __version__ = "0.0.0+local"
 
 __all__ = [
+    "AttestationResult",
     "CipherAlg",
     "DeviceConfig",
     "DeviceStatus",
     "DeviceVersion",
     "EcdhResult",
     "EncryptResult",
+    "FirmwareCheckResult",
     "HardwareForm",
     "HashAlg",
     "HemAuthError",
@@ -67,12 +83,15 @@ __all__ = [
     "KeyInfo",
     "KeyMode",
     "KeyType",
+    "LoggerKeyInfo",
     "MlKemDecapsResult",
     "MlKemEncapsResult",
     "ParsedKeyType",
     "Role",
+    "SelftestResult",
     "SignAlg",
     "SignResult",
+    "StorageDisk",
     "WrapAlg",
     "WrapResult",
     "__version__",

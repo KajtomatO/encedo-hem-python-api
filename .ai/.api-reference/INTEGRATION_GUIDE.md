@@ -68,6 +68,43 @@ The device rejects bodies larger than **7300 bytes** (5 × MTU) with HTTP 413.
 Validate plaintext size before encrypting: base64 overhead means the actual
 usable plaintext is ≈ 5475 bytes minus the JSON wrapper.
 
+### 2.6 ICMP ping
+
+HEM devices respond to ICMP echo requests (standard `ping`). This is useful
+as a fast network-layer reachability probe before any HTTPS connection attempt.
+
+Note that ICMP may be blocked by firewalls or container networking — absence
+of a ping reply does not guarantee the HTTPS API is unreachable. For
+API-level liveness, use `GET /api/system/version` (unauthenticated, always
+available when the device is operational).
+
+### 2.7 Binary uploads (firmware / bootloader)
+
+Firmware and bootloader upload endpoints (`POST /api/system/upgrade/upload_fw`,
+`upload_ui`, `upload_bootldr`) use a different content type than the JSON API:
+
+- `Content-Type: application/octet-stream`
+- `Content-Disposition: attachment; filename="<name>"`
+- `Expect: 100-continue`
+
+The 7300-byte body limit does **not** apply to binary uploads. Firmware binaries
+are much larger; the device streams them directly to flash.
+
+### 2.8 Firmware verification polling
+
+After uploading firmware, call the corresponding `check_*` endpoint to poll for
+verification status:
+
+| Status | Meaning |
+|---|---|
+| 200 | Verification complete — safe to install |
+| 201 / 202 | Still processing — retry after interval |
+| 406 | Verification failed — do not install |
+
+Polling cadence (per `encedo-hem-api-doc`, OQ-10 resolved):
+- `check_fw`: poll every **4 seconds**
+- `check_ui`: wait **60 seconds** before first poll, then every **5 seconds**
+
 ---
 
 ## 3. Authentication protocol (eJWT)

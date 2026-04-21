@@ -82,6 +82,83 @@ class Transport:
             raise from_status(response.status_code, endpoint=path, body=parsed)
         return _safe_parse_body(response) or {}
 
+    def post_binary(
+        self,
+        path: str,
+        body: bytes,
+        filename: str,
+        *,
+        token: str | None = None,
+    ) -> dict[str, Any]:
+        """POST a binary payload to the device.
+
+        Uses ``application/octet-stream`` + ``Content-Disposition`` +
+        ``Expect: 100-continue``, as required by the firmware upload endpoints
+        (OQ-9 resolved).  No size pre-flight — firmware binaries exceed the
+        7 300-byte JSON limit by design.
+        """
+        headers: dict[str, str] = {
+            "Content-Type": "application/octet-stream",
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Expect": "100-continue",
+        }
+        if token is not None:
+            headers["Authorization"] = f"Bearer {token}"
+        try:
+            response = self._device.request("POST", path, content=body, headers=headers)
+        except httpx.HTTPError as exc:
+            raise HemTransportError(f"{path}: {exc}", endpoint=path) from exc
+        if response.status_code != 200:
+            parsed = _safe_parse_body(response)
+            raise from_status(response.status_code, endpoint=path, body=parsed)
+        return _safe_parse_body(response) or {}
+
+    def request_no_raise(
+        self,
+        method: str,
+        path: str,
+        *,
+        token: str | None = None,
+    ) -> tuple[int, dict[str, Any]]:
+        """Make a request and return ``(status_code, body)`` without raising on HTTP errors.
+
+        Only raises :class:`HemTransportError` on network-level failures.
+        Used by polling loops (e.g. ``check_fw``) that need to inspect the
+        status code directly (200 = done, 201/202 = in-progress, 406 = failed).
+        """
+        headers: dict[str, str] = {}
+        if token is not None:
+            headers["Authorization"] = f"Bearer {token}"
+        try:
+            response = self._device.request(method, path, headers=headers)
+        except httpx.HTTPError as exc:
+            raise HemTransportError(f"{path}: {exc}", endpoint=path) from exc
+        return response.status_code, _safe_parse_body(response) or {}
+
+    def request_text(
+        self,
+        method: str,
+        path: str,
+        *,
+        token: str | None = None,
+    ) -> str:
+        """Make a request and return the response body as a UTF-8 string.
+
+        Used for endpoints that return plain text (e.g. ``GET /api/logger/:id``).
+        Raises the usual :mod:`encedo_hem.errors` exceptions on non-200 responses.
+        """
+        headers: dict[str, str] = {}
+        if token is not None:
+            headers["Authorization"] = f"Bearer {token}"
+        try:
+            response = self._device.request(method, path, headers=headers)
+        except httpx.HTTPError as exc:
+            raise HemTransportError(f"{path}: {exc}", endpoint=path) from exc
+        if response.status_code != 200:
+            parsed = _safe_parse_body(response)
+            raise from_status(response.status_code, endpoint=path, body=parsed)
+        return response.text
+
     def backend_post(self, path: str, json_body: dict[str, Any]) -> dict[str, Any]:
         """POST to ``api.encedo.com`` and return the parsed JSON body."""
         try:

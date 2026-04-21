@@ -614,6 +614,96 @@ exception instead of returning `False`.
 is it a device error that should propagate? Leaning toward treating it as "invalid
 signature" since that is the semantic context, but confirming with upstream first.
 
+### OQ-24 — Storage unlock URL path: plain vs `/ro` / `/rw` suffix
+
+**Status (2026-04-20):** Open — confirmed on firmware during Phase 3
+integration tests.
+
+**Affected endpoint:** `GET /api/storage/unlock[/ro|/rw]`
+**Confirmed via:** live device testing on my.ence.do (2026-04-20, Python
+Round 2 integration run).
+
+`encedo-hem-api-doc/storage/unlock.md` documents the path as plain
+`/api/storage/unlock`, with the `rw`/`ro` mode encoded only in the JWT
+scope. Encedo Manager (`build.js:7729`, `core2.js:5437`) always appends
+`/ro` or `/rw` to the URL. The older `encedo.js:1691` uses the plain path.
+
+Observed on firmware: the plain path returns HTTP 200 but the subsequent
+`lock` returns 406, suggesting the plain path is a no-op on current
+firmware. Switching to the Manager-style `/ro`/`/rw` suffix is the
+working fix and is now used by the Python binding.
+
+**Open question:** Is the plain path supported at all on current firmware,
+or is it a deprecated route kept only for backwards-compatibility with
+`encedo.js`? Should `storage/unlock.md` document the `/ro`/`/rw` suffix as
+the canonical form?
+
+Supplements OQ-11 (scope format), which did not cover the URL path.
+
+---
+
+### OQ-25 — Storage lock scope: `storage:disk` (docs) vs `storage:disk{N}` (callers)
+
+**Status (2026-04-20):** Open — confirmed on firmware during Phase 3
+integration tests.
+
+**Affected endpoint:** `GET /api/storage/lock`
+**Confirmed via:** live device testing on my.ence.do (2026-04-20).
+
+`encedo-hem-api-doc/storage/lock.md:12` states the scope is `storage:disk`
+(generic). Every working caller uses a per-disk scope instead:
+
+- Encedo Manager `build.js:1844` → `storage:disk{N}` (e.g. `storage:disk0`)
+- HEM test suite `test_12.php:118` reuses the unlock token
+  (e.g. `storage:disk0:rw`)
+
+Observed: a token scoped `storage:disk` returns HTTP 406 on lock. A token
+scoped `storage:disk0` succeeds. The Python binding now sends the
+per-disk scope.
+
+**Open question:** Is the generic `storage:disk` scope actually accepted
+by any firmware build? `lock.md` should either document the per-disk
+scope format or note that the generic scope is device-specific. This
+mirrors the OQ-11 pattern (`storage:diskN[:mode]` for unlock) and the
+OQ-16 pattern (scope docs listed a generic option that firmware rejects).
+
+---
+
+### OQ-26 — `DELETE /api/logger/:id` returns HTTP 404 for a just-listed log ID
+
+**Status (2026-04-20):** Open — confirmed on firmware during Phase 3
+integration tests; test marked `xfail`.
+
+**Affected endpoint:** `DELETE /api/logger/:id`
+**Confirmed via:** live device testing on my.ence.do (2026-04-20).
+
+A log ID returned by `GET /api/logger/list/0` was immediately fed to
+`DELETE /api/logger/{id}` with scope `logger:del`; the device returned
+HTTP 404. No reference implementation exercises this endpoint:
+
+- `encedo-hem-api-doc/logger/delete.md:36` notes the Manager registers
+  the endpoint but never calls DELETE on it. It also flags a registry
+  discrepancy: Manager maps `logger:get` (not `logger:del`) for the
+  DELETE method, while `scopes.js` defines `logger:del` separately.
+- HEM test suite (`test_9.php`) only issues GET operations against
+  `/api/logger/*`.
+
+Python client's `LoggerAPI.delete()` matches `delete.md` precisely
+(`DELETE /api/logger/{id}` + scope `logger:del`). The integration test
+`test_logger_delete` is marked `pytest.xfail(strict=False)` until the
+endpoint is either confirmed broken or the correct shape is documented.
+
+**Open questions:**
+- Is individual log-entry deletion implemented in current firmware?
+- If so, what path format or precondition is required (e.g. is `:id`
+  expected to be a filename, a full path, a different hex encoding)?
+- Should the Manager endpoint registry be corrected to use `logger:del`?
+
+**Classification:** Device/docs/tooling all point in different directions;
+unverified end-to-end anywhere.
+
+---
+
 ### OQ-23 — `POST /api/keymgmt/derive` scope `keymgmt:ecdh` rejected with HTTP 403
 
 **Status (2026-04-14):** Open — confirmed on firmware during Phase 2 integration tests.
@@ -687,3 +777,6 @@ unblock it with high confidence.
 | OQ-21 | Significant | **Resolved** | `status.https` = HTTPS listener capability flag; Manager uses it to redirect HTTP→HTTPS | — |
 | OQ-22 | Significant | Open | `mldsa/verify` returns HTTP 795 (not 406) for invalid signature | `mldsa.verify()` raises instead of returning `False` |
 | OQ-23 | Critical | **Workaround identified** | `keymgmt/derive` rejects `keymgmt:ecdh`; use `keymgmt:gen` (per HEM test suite) | Pending retest on my.ence.do |
+| OQ-24 | Significant | **Workaround identified** | Storage unlock URL needs `/ro`/`/rw` suffix; plain path appears to be a no-op on current firmware | Binding now uses Manager-style suffix |
+| OQ-25 | Significant | **Workaround identified** | Storage lock scope is `storage:disk{N}` (per Manager + PHP), not generic `storage:disk` | Binding now sends per-disk scope |
+| OQ-26 | Significant | Open | `DELETE /api/logger/:id` returns 404; endpoint unverified in every reference implementation | `test_logger_delete` marked `xfail` |

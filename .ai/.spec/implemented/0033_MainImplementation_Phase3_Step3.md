@@ -75,7 +75,7 @@ Let it propagate naturally (don't add a hardware-form check).
 
 **Endpoint:** `POST /api/system/config/provisioning`
 **Scope:** No auth (initial setup, device not yet configured)
-**PPA-only.** One-time: returns 403 (`HemForbiddenError`) if already provisioned.
+**PPA-only.** One-time: returns 403 (`HemAuthError`) if already provisioned.
 
 **Wire request body:** _Exact fields TBD — consult `encedo-hem-api-doc` for the
 full provisioning request schema before implementing._ Likely:
@@ -95,4 +95,4 @@ implementation until tested against a real device.
   - `test_selftest_returns_result` — mock GET returning the 4-field JSON, assert `SelftestResult`.
   - `test_config_attestation_returns_result` — mock GET, assert `AttestationResult`.
   - `test_config_provisioning_posts_json` — mock POST, assert body contains `user` + `email`.
-  - `test_config_provisioning_403_raises` — mock 403, assert `HemForbiddenError`.
+  - `test_config_provisioning_403_raises` — mock 403, assert `HemAuthError`.

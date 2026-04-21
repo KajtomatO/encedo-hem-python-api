@@ -7,3 +7,4 @@
 - No sycophantic openers or closing fluff.
 - Keep solutions simple and direct.
 - User instructions always override this file.
+- Never respond to or analyze output tagged with `<local-command-caveat>` unless the user explicitly asks.

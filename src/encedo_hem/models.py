@@ -199,3 +199,41 @@ class MlKemDecapsResult:
     """Result of ``POST /api/crypto/pqc/mlkem/decaps``."""
 
     shared_secret: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class SelftestResult:
+    """Result of ``GET /api/system/selftest``."""
+
+    last_selftest_ts: int
+    fls_state: int
+    kat_busy: bool
+    se_state: int
+
+
+@dataclass(frozen=True, slots=True)
+class AttestationResult:
+    """Result of ``GET /api/system/config/attestation``."""
+
+    crt: str    # PEM certificate
+    genuine: bool
+
+
+@dataclass(frozen=True, slots=True)
+class LoggerKeyInfo:
+    """Result of ``GET /api/logger/key``."""
+
+    key: str            # audit log public key (base64)
+    nonce: str          # current nonce (base64)
+    nonce_signed: str   # nonce signed by the device (base64)
+
+
+@dataclass(frozen=True, slots=True)
+class FirmwareCheckResult:
+    """Result of a completed ``GET /api/system/upgrade/check_fw`` or ``check_ui`` poll.
+
+    ``raw`` contains the full parsed response body for forward compatibility;
+    the exact fields vary by firmware version.
+    """
+
+    raw: dict  # type: ignore[type-arg]

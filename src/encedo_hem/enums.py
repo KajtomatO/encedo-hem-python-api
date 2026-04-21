@@ -129,3 +129,15 @@ class WrapAlg(Enum):
     AES128 = "AES128"
     AES192 = "AES192"
     AES256 = "AES256"
+
+
+class StorageDisk(Enum):
+    """Disk selector + access mode for storage unlock/lock (PPA only).
+
+    The enum value is used verbatim in the URL path and scope string.
+    """
+
+    DISK0 = "disk0"
+    DISK0_RW = "disk0:rw"
+    DISK1 = "disk1"
+    DISK1_RW = "disk1:rw"

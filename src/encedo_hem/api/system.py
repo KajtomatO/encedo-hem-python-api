@@ -5,7 +5,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from ..models import DeviceConfig, DeviceStatus, DeviceVersion
+from ..models import (
+    AttestationResult,
+    DeviceConfig,
+    DeviceStatus,
+    DeviceVersion,
+    SelftestResult,
+)
 
 if TYPE_CHECKING:
     from ..client import HemClient
@@ -89,6 +95,73 @@ class SystemAPI:
         )
 
     def reboot(self) -> None:
-        """Reboot the device (requires ``system:config`` scope)."""
-        token = self._client._auth.ensure_token("system:config")
+        """Reboot the device.
+
+        Requires ``system:upgrade`` scope (also accepted: ``system:config``,
+        ``system:shutdown``). Invalidates all tokens — re-authenticate after
+        calling this.
+        """
+        token = self._client._auth.ensure_token("system:upgrade")
         self._client._transport.request("GET", "/api/system/reboot", token=token)
+        self._client._auth.invalidate()
+
+    def shutdown(self) -> None:
+        """Shut down the device (PPA only; requires ``system:shutdown`` scope).
+
+        The device will stop responding after this call. Re-authenticate (or
+        power-cycle) before making further requests.
+        """
+        token = self._client._auth.ensure_token("system:shutdown")
+        self._client._transport.request("GET", "/api/system/shutdown", token=token)
+
+    def selftest(self) -> SelftestResult:
+        """Run and return the device self-test status (any valid token)."""
+        token = self._client._auth.ensure_token("system:config")
+        raw = self._client._transport.request("GET", "/api/system/selftest", token=token)
+        return SelftestResult(
+            last_selftest_ts=int(raw.get("last_selftest_ts", 0)),
+            fls_state=int(raw.get("fls_state", 0)),
+            kat_busy=bool(raw.get("kat_busy", False)),
+            se_state=int(raw.get("se_state", 0)),
+        )
+
+    def config_attestation(self) -> AttestationResult:
+        """Return the device attestation certificate and genuineness flag.
+
+        PPA only. The device ignores the access scope on this endpoint, but
+        a valid JWT is required on a provisioned device (auth is only
+        optional on a fresh, unpersonalized device — see
+        ``encedo-hem-api-doc/system/config-attestation.md``). We use
+        ``system:config`` since any valid token works.
+        """
+        token = self._client._auth.ensure_token("system:config")
+        raw = self._client._transport.request(
+            "GET", "/api/system/config/attestation", token=token
+        )
+        return AttestationResult(crt=raw["crt"], genuine=bool(raw["genuine"]))
+
+    def config_provisioning(
+        self,
+        user: str,
+        email: str,
+        passphrase: str,
+        *,
+        hostname: str | None = None,
+    ) -> None:
+        """Provision the device for the first time (PPA only, no auth required).
+
+        One-time operation: raises ``HemAuthError`` (HTTP 403) if the device is
+        already provisioned.
+
+        # OQ-PROVISIONING: confirm request body schema against live device.
+        """
+        body: dict[str, object] = {
+            "user": user,
+            "email": email,
+            "passphrase": passphrase,
+        }
+        if hostname is not None:
+            body["hostname"] = hostname
+        self._client._transport.request(
+            "POST", "/api/system/config/provisioning", json_body=body
+        )

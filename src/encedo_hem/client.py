@@ -1,10 +1,13 @@
 """:class:`HemClient` -- the user-facing facade.
 
-The client owns the transport, the auth state, and three API namespaces:
+The client owns the transport, the auth state, and API namespaces:
 
 - ``client.system`` -- :class:`encedo_hem.api.system.SystemAPI`
 - ``client.keys`` -- :class:`encedo_hem.api.keymgmt.KeyMgmtAPI`
 - ``client.crypto`` -- :class:`encedo_hem.api.crypto.CryptoAPI`
+- ``client.storage`` -- :class:`encedo_hem.api.storage.StorageAPI`
+- ``client.logger`` -- :class:`encedo_hem.api.logger.LoggerAPI`
+- ``client.upgrade`` -- :class:`encedo_hem.api.upgrade.UpgradeAPI`
 
 Use it as a context manager so the underlying httpx clients are closed and
 the in-memory passphrase buffer is best-effort zeroed.
@@ -13,12 +16,17 @@ the in-memory passphrase buffer is best-effort zeroed.
 from __future__ import annotations
 
 import logging
+import platform
+import subprocess
 from collections.abc import Callable
 from enum import Enum
 
 from .api.crypto import CryptoAPI
 from .api.keymgmt import KeyMgmtAPI
+from .api.logger import LoggerAPI
+from .api.storage import StorageAPI
 from .api.system import SystemAPI
+from .api.upgrade import UpgradeAPI
 from .auth import Auth
 from .enums import HardwareForm, Role
 from .errors import HemNotSupportedError
@@ -78,6 +86,9 @@ class HemClient:
         self.system = SystemAPI(self)
         self.keys = KeyMgmtAPI(self)
         self.crypto = CryptoAPI(self)
+        self.storage = StorageAPI(self)
+        self.logger = LoggerAPI(self)
+        self.upgrade = UpgradeAPI(self)
 
     # --- lifecycle ---
 
@@ -94,6 +105,29 @@ class HemClient:
                 self._passphrase_buf[i] = 0
             self._passphrase_buf = None
         self._transport.close()
+
+    def is_alive(self, *, timeout: float = 2.0) -> bool:
+        """Return ``True`` if the device responds to an ICMP echo request.
+
+        Uses the OS ``ping`` command via :mod:`subprocess`. ICMP may be blocked
+        by firewalls or container networking — a ``False`` return does not
+        necessarily mean the API is unreachable. Use :meth:`ensure_ready` for
+        an HTTP-level liveness check.
+
+        :param timeout: Seconds to wait for a reply (minimum 1).
+        """
+        is_windows = platform.system().lower() == "windows"
+        count_flag = "-n" if is_windows else "-c"
+        if is_windows:
+            timeout_flag, timeout_val = "-w", str(int(timeout * 1000))
+        else:
+            timeout_flag, timeout_val = "-W", str(max(1, int(timeout)))
+        cmd = ["ping", count_flag, "1", timeout_flag, timeout_val, self._host]
+        try:
+            result = subprocess.run(cmd, capture_output=True, timeout=timeout + 2)
+            return result.returncode == 0
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            return False
 
     # --- introspection ---
 

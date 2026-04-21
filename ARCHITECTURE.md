@@ -144,18 +144,24 @@ The arrow from each API module to `auth` represents *scope enforcement*: API met
   - `HemClient(host: str, passphrase: str, *, role: Role = Role.USER, auto_checkin: bool = True, strict_hardware: bool = True, timeout: float = 30.0, logger: logging.Logger | None = None)`
   - Namespaces: `.system`, `.auth_flow` (init/pair/remote-login — Phase 4), `.keys`, `.crypto`, `.logger`, `.storage`, `.upgrade`. Unimplemented namespaces raise `NotImplementedError` on first attribute access.
   - `.ensure_ready()` — idempotent; runs version probe + optional check-in; safe to call multiple times. First authenticated endpoint call triggers this automatically.
+  - `.is_alive(*, timeout: float = 2.0) -> bool` — sends one ICMP echo request to `host` via the OS `ping` command. Pure network-layer check (not HTTP). Returns `False` on timeout, ICMP-blocked networks, or missing `ping` binary. Does **not** imply API availability — use `ensure_ready()` for that. Not called automatically; opt-in diagnostic tool.
   - `.username` (from `lbl`), `.hardware` (enum: `PPA | EPA | UNKNOWN`), `.firmware_version` — cached metadata.
   - `.close()` — zeroes the passphrase buffer, closes transport.
 - **Data:** Holds the passphrase bytes, a `ReadyState` flag (not-ready / version-checked / ready), the cached `DeviceVersion` result, the cached `DeviceStatus` from the readiness probe, and the form-factor.
 
 ### `encedo_hem.api.system`
 
-- **Responsibility:** All `/api/system/*` endpoints — `version`, `status`, `checkin` (both phases), `config` (get/set), `reboot`, `shutdown` (PPA only), `selftest`.
-- **Interfaces (Phase 1 subset):**
+- **Responsibility:** All `/api/system/*` endpoints — `version`, `status`, `checkin` (both phases), `config` (get/set), `reboot`, `shutdown` (PPA only), `selftest`, `config_attestation`, `config_provisioning`.
+- **Interfaces:**
   - `version() -> DeviceVersion` — unauthenticated.
-  - `status() -> DeviceStatus` — unauthenticated; `ts` is `Optional[str]` (ISO 8601, e.g. `"2022-03-16T18:17:27Z"`), `initialized` is derived from the **absence** of the `inited` key (inverted logic per `INTEGRATION_GUIDE.md` §8.1).
-  - `checkin() -> None` — runs the full three-step bounce: `GET /api/system/checkin` → `POST https://api.encedo.com/checkin` → `POST /api/system/checkin`. Forwards the opaque blobs verbatim.
+  - `status() -> DeviceStatus` — unauthenticated.
+  - `checkin() -> None` — three-step bounce to `api.encedo.com`.
   - `config() -> DeviceConfig` — scope `system:config`.
+  - `reboot() -> None` — scope `system:upgrade`; invalidates all tokens.
+  - `shutdown() -> None` — scope `system:shutdown`; PPA only.
+  - `selftest() -> SelftestResult` — scope `system:config`.
+  - `config_attestation(*, token=None) -> AttestationResult` — PPA only; unauthenticated or token.
+  - `config_provisioning(user, email, passphrase, *, hostname=None) -> None` — one-time, no auth.
 - **Data:** None — everything returned is a fresh dataclass built from the JSON response.
 
 ### `encedo_hem.api.keymgmt`
